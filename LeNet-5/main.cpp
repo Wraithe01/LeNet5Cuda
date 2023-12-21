@@ -27,6 +27,8 @@ SOFTWARE.
 #include <stdio.h>
 #include <time.h>
 
+#include "GlobalDefines.h"
+
 #define FILE_TRAIN_IMAGE		"train-images-idx3-ubyte"
 #define FILE_TRAIN_LABEL		"train-labels-idx1-ubyte"
 #define FILE_TEST_IMAGE		"t10k-images-idx3-ubyte"
@@ -124,6 +126,24 @@ int main()
 	LeNet5 *lenet = (LeNet5 *)malloc(sizeof(LeNet5));
 	if (load(lenet, LENET_FILE))
 		Initial(lenet);
+
+#ifdef GPU_ACCELLERATED
+	if (LeNetCudaSetup(lenet) != 0)
+	{
+		LeNetCudaFree(lenet);
+		system("pause");
+		return 1;
+	}
+#endif // GPU_ACCELLERATED
+
+
+#ifdef GPU_ACCELLERATED
+	printf("Testing GPU accellerated LeNet-5 implementation");
+#else
+	printf("Testing sequential LeNet-5 implementation");
+#endif // GPU_ACCELLERATED
+
+
 	clock_t start = clock();
 
 	//----------------------------------------------------------------------------------------
@@ -137,9 +157,13 @@ int main()
 	{
 		training(lenet, train_data, train_label, batches[i], COUNT_TRAIN);
 	}
+	printf("Training time taken: %u sec\n", (unsigned)(clock() - start) / CLOCKS_PER_SEC);
+
 	// printf("Calculating training accuracy...\n");
 	// int training_right = testing(lenet, train_data, train_label, COUNT_TRAIN);
 	// printf("Training accuracy: %f%%\n", training_right * 100.0 / COUNT_TRAIN);
+
+	start = clock();
 
 	printf("Calculating test accuracy...\n");
 	int right = testing(lenet, test_data, test_label, COUNT_TEST);
@@ -148,8 +172,11 @@ int main()
 	printf("Testing: Wrong predictions = %d (%.2f%%)\n", wrong, wrong/100.0);
 	//----------------------------------------------------------------------------------------
 
-	printf("Time taken: %u sec\n", (unsigned)(clock() - start)/CLOCKS_PER_SEC);
+	printf("Testing time taken: %u sec\n", (unsigned)(clock() - start)/CLOCKS_PER_SEC);
 	//save(lenet, LENET_FILE);
+#ifdef GPU_ACCELLERATED
+	LeNetCudaFree(lenet);
+#endif // GPU_ACCELLERATED
 	free(lenet);
 	free(train_data);
 	free(train_label);
