@@ -50,7 +50,7 @@ int read_data(unsigned char(*data)[28][28], unsigned char label[], const int cou
 	return 0;
 }
 
-void training(LeNet5 *lenet, image *train_data, uint8 *train_label, int batch_size, int total_size)
+void training(LeNet5 *lenet, image *train_data, uint8 *train_label, int batch_size, int total_size, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
 	printf("Total images in training set: %d\n", total_size);
 	printf("Batchsize: %d\n", batch_size);
@@ -58,7 +58,7 @@ void training(LeNet5 *lenet, image *train_data, uint8 *train_label, int batch_si
 	for (int i = 0, percent = 0; i <= total_size - batch_size; i += batch_size)
 	{
 		printf("\nTraining on images: %d-%d\t", i, i + batch_size);
-		TrainBatch(lenet, train_data + i, train_label + i, batch_size);
+		TrainBatch(lenet, train_data + i, train_label + i, batch_size, lenetCuda, deltasCuda, featuresCuda, errorsCuda);
 		if (i * 100 / total_size > percent)
 			printf("Training %2d%% complete", percent = i * 100 / total_size);
 	}
@@ -167,7 +167,7 @@ int main()
 	// We are using only one epoch, even though multiple epochs have their benefits.
 	for (int i = 0; i < sizeof(batches) / sizeof(*batches); ++i)
 	{
-		training(lenet, train_data, train_label, batches[i], COUNT_TRAIN);
+		training(lenet, train_data, train_label, batches[i], COUNT_TRAIN, lenetCuda, deltas, features, errors);
 	}
 	printf("Training time taken: %u sec\n", (unsigned)(clock() - start) / CLOCKS_PER_SEC);
 

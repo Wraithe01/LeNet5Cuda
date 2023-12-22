@@ -100,7 +100,7 @@ typedef struct FeatureCuda
 	double* output;
 }FeatureCuda;
 
-void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize);
+void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda);
 
 void Train(LeNet5 *lenet, image input, uint8 label);
 
