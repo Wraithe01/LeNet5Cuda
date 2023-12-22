@@ -351,7 +351,7 @@ static double f64rand()
 	return *(double *)&lvalue - 3;
 }
 
-void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize)
+void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
 	double buffer[GETCOUNT(LeNet5)] = { 0 };
 	int i = 0;
