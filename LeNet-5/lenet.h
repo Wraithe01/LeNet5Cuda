@@ -23,7 +23,6 @@ SOFTWARE.
 // Source: https://github.com/fan-wenjie/LeNet-5
 
 #pragma once
-#include "GlobalDefines.h"
 
 // Sai: In LeNet, a 5x5 convolution kernel (or mask) is used
 #define LENGTH_KERNEL	5
@@ -54,18 +53,6 @@ typedef uint8 image[28][28];
 
 typedef struct LeNet5
 {
-#ifdef GPU_ACCELLERATED
-	double* cudaWeight0_1;
-	double* cudaWeight2_3;
-	double* cudaWeight4_5;
-	double* cudaWeight5_6;
-
-	double* cudaBias0_1;
-	double* cudaBias2_3;
-	double* cudaBias4_5;
-	double* cudaBias5_6;
-#endif // GPU_ACCELLERATED
-
 	double weight0_1[INPUT][LAYER1][LENGTH_KERNEL][LENGTH_KERNEL];
 	double weight2_3[LAYER2][LAYER3][LENGTH_KERNEL][LENGTH_KERNEL];
 	double weight4_5[LAYER4][LAYER5][LENGTH_KERNEL][LENGTH_KERNEL];
@@ -78,28 +65,40 @@ typedef struct LeNet5
 
 }LeNet5;
 
+typedef struct LeNet5Cuda
+{
+	double* weight0_1;
+	double* weight2_3;
+	double* weight4_5;
+	double* weight5_6;
+
+	double* bias0_1;
+	double* bias2_3;
+	double* bias4_5;
+	double* bias5_6;
+}LeNet5Cuda;
+
 typedef struct Feature
 {
-#ifdef GPU_ACCELLERATED
-	double* cudaInput;
-	double* cudaLayer1;
-	double* cudaLayer2;
-	double* cudaLayer3;
-	double* cudaLayer4;
-	double* cudaLayer5;
-	double* cudaOutput;
-#endif // GPU_ACCELLERATED
-
 	double input[INPUT][LENGTH_FEATURE0][LENGTH_FEATURE0];
-	double output[OUTPUT];
-
-	// Once all parts involving the features has been moved to cude we could potentially remove these and have them be exclusively in cuda
 	double layer1[LAYER1][LENGTH_FEATURE1][LENGTH_FEATURE1];
 	double layer2[LAYER2][LENGTH_FEATURE2][LENGTH_FEATURE2];
 	double layer3[LAYER3][LENGTH_FEATURE3][LENGTH_FEATURE3];
 	double layer4[LAYER4][LENGTH_FEATURE4][LENGTH_FEATURE4];
 	double layer5[LAYER5][LENGTH_FEATURE5][LENGTH_FEATURE5];
+	double output[OUTPUT];
 }Feature;
+
+typedef struct FeatureCuda
+{
+	double* input;
+	double* layer1;
+	double* layer2;
+	double* layer3;
+	double* layer4;
+	double* layer5;
+	double* output;
+}FeatureCuda;
 
 void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize);
 
@@ -111,10 +110,10 @@ void Initial(LeNet5 *lenet);
 
 void PrintResult(int confusion_matrix[OUTPUT][OUTPUT]);
 
-#ifdef GPU_ACCELLERATED
-int LeNetCudaSetup(LeNet5* lenet5);
-int LeNetCudaFree(LeNet5* lenet5);
-int LeNetCudaPushData(LeNet5* lenet5);
-int LeNetCudaPullData(LeNet5* lenet5);
-#endif
+int CudaInit();
+int CudaDeInit();
+int LeNetCudaAlloc(LeNet5Cuda* lenet5);
+int LeNetCudaFree(LeNet5Cuda* lenet5);
+int FeatureCudaAlloc(FeatureCuda* feature);
+int FeatureCudaFree(FeatureCuda* feature);
 

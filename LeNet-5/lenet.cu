@@ -23,11 +23,8 @@ SOFTWARE.
 // Source: https://github.com/fan-wenjie/LeNet-5
 
 #include "lenet.h"
-#include "GlobalDefines.h"
-#ifdef GPU_ACCELLERATED
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
-#endif // GPU_ACCELLERATED
 #include <memory.h>
 #include <time.h>
 #include <stdlib.h>
@@ -35,19 +32,15 @@ SOFTWARE.
 #include <cstdio>
 
 
-#ifdef GPU_ACCELLERATED
-//Implement kernels and related function calls for cuda here
-
 #define CUDAMALLOC_CHECK(ptr, size)									 \
 {																	 \
-	cudaError_t cudaErr = cudaMalloc((void**)&ptr, size);			 \
-	if (cudaErr != cudaSuccess) {								     \
+	if (cudaMalloc((void**)&ptr, size) != cudaSuccess) {		     \
 		fprintf(stderr, "ERROR: cudaMalloc for %s failed!\n", #ptr); \
 		return -1;													 \
 	}																 \
 }																	 \
 
-int LeNetCudaSetup(LeNet5* lenet5)
+int CudaInit()
 {
 	cudaError_t cudaStatus;
 
@@ -57,30 +50,11 @@ int LeNetCudaSetup(LeNet5* lenet5)
 		fprintf(stderr, "ERROR: cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?\n");
 		return -1;
 	}
-
-	// Allocate GPU buffers for LeNet5 data.
-	CUDAMALLOC_CHECK(lenet5->cudaWeight0_1, INPUT*LAYER1*LENGTH_KERNEL*LENGTH_KERNEL*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaWeight2_3, LAYER2*LAYER3*LENGTH_KERNEL*LENGTH_KERNEL*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaWeight4_5, LAYER4*LAYER5*LENGTH_KERNEL*LENGTH_KERNEL*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaWeight5_6, (LAYER5 * LENGTH_FEATURE5 * LENGTH_FEATURE5)*OUTPUT*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaBias0_1, LAYER1*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaBias2_3, LAYER3*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaBias4_5, LAYER5*sizeof(double));
-	CUDAMALLOC_CHECK(lenet5->cudaBias5_6, OUTPUT*sizeof(double));
-
 	return 0;
 }
-int LeNetCudaFree(LeNet5* lenet5)
-{
-	cudaFree(lenet5->cudaWeight0_1);
-	cudaFree(lenet5->cudaWeight2_3);
-	cudaFree(lenet5->cudaWeight4_5);
-	cudaFree(lenet5->cudaWeight5_6);
-	cudaFree(lenet5->cudaBias0_1);
-	cudaFree(lenet5->cudaBias2_3);
-	cudaFree(lenet5->cudaBias4_5);
-	cudaFree(lenet5->cudaBias5_6);
 
+int CudaDeInit()
+{
 	cudaError_t cudaStatus;
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -92,44 +66,62 @@ int LeNetCudaFree(LeNet5* lenet5)
 	return 0;
 }
 
+int LeNetCudaAlloc(LeNet5Cuda* lenet5)
+{
+	// Allocate GPU buffers for LeNet5 data.
+	CUDAMALLOC_CHECK(lenet5->weight0_1, INPUT * LAYER1 * LENGTH_KERNEL * LENGTH_KERNEL * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->weight2_3, LAYER2 * LAYER3 * LENGTH_KERNEL * LENGTH_KERNEL * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->weight4_5, LAYER4 * LAYER5 * LENGTH_KERNEL * LENGTH_KERNEL * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->weight5_6, (LAYER5 * LENGTH_FEATURE5 * LENGTH_FEATURE5) * OUTPUT * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->bias0_1, LAYER1 * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->bias2_3, LAYER3 * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->bias4_5, LAYER5 * sizeof(double));
+	CUDAMALLOC_CHECK(lenet5->bias5_6, OUTPUT * sizeof(double));
+
+	return 0;
+}
+int LeNetCudaFree(LeNet5Cuda* lenet5)
+{
+	cudaFree(lenet5->weight0_1);
+	cudaFree(lenet5->weight2_3);
+	cudaFree(lenet5->weight4_5);
+	cudaFree(lenet5->weight5_6);
+	cudaFree(lenet5->bias0_1);
+	cudaFree(lenet5->bias2_3);
+	cudaFree(lenet5->bias4_5);
+	cudaFree(lenet5->bias5_6);
+	return 0;
+}
+
+int FeatureCudaAlloc(FeatureCuda* feature)
+{
+	CUDAMALLOC_CHECK(feature->input, INPUT * LENGTH_FEATURE0 * LENGTH_FEATURE0 * sizeof(double));
+	CUDAMALLOC_CHECK(feature->layer1, LAYER1 * LENGTH_FEATURE1 * LENGTH_FEATURE1 * sizeof(double));
+	CUDAMALLOC_CHECK(feature->layer2, LAYER2 * LENGTH_FEATURE2 * LENGTH_FEATURE2 * sizeof(double));
+	CUDAMALLOC_CHECK(feature->layer3, LAYER3 * LENGTH_FEATURE3 * LENGTH_FEATURE3 * sizeof(double));
+	CUDAMALLOC_CHECK(feature->layer4, LAYER4 * LENGTH_FEATURE4 * LENGTH_FEATURE4 * sizeof(double));
+	CUDAMALLOC_CHECK(feature->layer5, LAYER5 * LENGTH_FEATURE5 * LENGTH_FEATURE5 * sizeof(double));
+	CUDAMALLOC_CHECK(feature->output, OUTPUT*sizeof(double));
+
+	return 0;
+}
+
+int FeatureCudaFree(FeatureCuda* feature)
+{
+	cudaFree(feature->input);
+	cudaFree(feature->layer1);
+	cudaFree(feature->layer2);
+	cudaFree(feature->layer3);
+	cudaFree(feature->layer4);
+	cudaFree(feature->layer5);
+	cudaFree(feature->output);
+	return 0;
+}
+
 #define CUDAMEMCPY_CHECK(src, dest, size, type)												 \
-{																							 \
-	cudaError_t cudaErr = cudaMemcpy(dest, src, size, type);  								 \
-	if (cudaErr != cudaSuccess) {															 \
+	if (cudaMemcpy(dest, src, size, type) != cudaSuccess)								 \
 		fprintf(stderr, "ERROR: cudaMemCpy %s from %s to %s failed!\n", #type, #src, #dest); \
-		return -1;																			 \
-	}																						 \
-}																							 \
 
-int LeNetCudaPushData(LeNet5* lenet5)
-{
-	// Copy data from host memory to GPU buffers.
-	CUDAMEMCPY_CHECK(lenet5->weight0_1, lenet5->cudaWeight0_1, sizeof(lenet5->weight0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet5->weight2_3, lenet5->cudaWeight2_3, sizeof(lenet5->weight2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet5->weight4_5, lenet5->cudaWeight4_5, sizeof(lenet5->weight4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet5->weight5_6, lenet5->cudaWeight5_6, sizeof(lenet5->weight5_6), cudaMemcpyHostToDevice);
-
-	CUDAMEMCPY_CHECK(lenet5->bias0_1, lenet5->cudaBias0_1, sizeof(lenet5->bias0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet5->bias2_3, lenet5->cudaBias2_3, sizeof(lenet5->bias2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet5->bias4_5, lenet5->cudaBias4_5, sizeof(lenet5->bias4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet5->bias5_6, lenet5->cudaBias5_6, sizeof(lenet5->bias5_6), cudaMemcpyHostToDevice);
-	return 0;
-}
-int LeNetCudaPullData(LeNet5* lenet5)
-{
-	// Copy data from gpu buffers to host memory
-	CUDAMEMCPY_CHECK(lenet5->cudaWeight0_1, lenet5->weight0_1, sizeof(lenet5->weight0_1), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(lenet5->cudaWeight2_3, lenet5->weight2_3, sizeof(lenet5->weight2_3), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(lenet5->cudaWeight4_5, lenet5->weight4_5, sizeof(lenet5->weight4_5), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(lenet5->cudaWeight5_6, lenet5->weight5_6, sizeof(lenet5->weight5_6), cudaMemcpyDeviceToHost);
-
-	CUDAMEMCPY_CHECK(lenet5->cudaBias0_1, lenet5->bias0_1, sizeof(lenet5->bias0_1), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(lenet5->cudaBias2_3, lenet5->bias2_3, sizeof(lenet5->bias2_3), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(lenet5->cudaBias4_5, lenet5->bias4_5, sizeof(lenet5->bias4_5), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(lenet5->cudaBias5_6, lenet5->bias5_6, sizeof(lenet5->bias5_6), cudaMemcpyDeviceToHost);
-	return 0;
-}
-#endif // GPU_ACCELLERATED
 
 #define GETLENGTH(array) (sizeof(array)/sizeof(*(array)))
 
@@ -267,12 +259,16 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double))
 
 static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double))
 {
+#ifdef GPU_ACCELLERATED
+
+#else
 	DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
 	CONVOLUTION_BACKWARD(features->layer4, errors->layer4, errors->layer5, lenet->weight4_5, deltas->weight4_5, deltas->bias4_5, actiongrad);
 	SUBSAMP_MAX_BACKWARD(features->layer3, errors->layer3, errors->layer4);
 	CONVOLUTION_BACKWARD(features->layer2, errors->layer2, errors->layer3, lenet->weight2_3, deltas->weight2_3, deltas->bias2_3, actiongrad);
 	SUBSAMP_MAX_BACKWARD(features->layer1, errors->layer1, errors->layer2);
 	CONVOLUTION_BACKWARD(features->input, errors->input, errors->layer1, lenet->weight0_1, deltas->weight0_1, deltas->bias0_1, actiongrad);
+#endif // GPU_ACCELLERATED
 }
 
 static inline void load_input(Feature *features, image input)

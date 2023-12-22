@@ -27,8 +27,6 @@ SOFTWARE.
 #include <stdio.h>
 #include <time.h>
 
-#include "GlobalDefines.h"
-
 #define FILE_TRAIN_IMAGE		"train-images-idx3-ubyte"
 #define FILE_TRAIN_LABEL		"train-labels-idx1-ubyte"
 #define FILE_TEST_IMAGE		"t10k-images-idx3-ubyte"
@@ -127,20 +125,39 @@ int main()
 	if (load(lenet, LENET_FILE))
 		Initial(lenet);
 
-#ifdef GPU_ACCELLERATED
-	if (LeNetCudaSetup(lenet) != 0)
+	LeNet5Cuda* lenetCuda = (LeNet5Cuda*)malloc(sizeof(LeNet5Cuda));
+	LeNet5Cuda*	deltas = (LeNet5Cuda*)malloc(sizeof(LeNet5Cuda));
+	FeatureCuda* features = (FeatureCuda*)malloc(sizeof(FeatureCuda));
+	FeatureCuda* errors = (FeatureCuda*)malloc(sizeof(FeatureCuda));
+
+	if ((CudaInit() != 0) || 
+		(LeNetCudaAlloc(lenetCuda) != 0) ||
+		(LeNetCudaAlloc(deltas)    != 0) ||
+		(FeatureCudaAlloc(features)      != 0) ||
+		(FeatureCudaAlloc(errors) != 0))
 	{
-		LeNetCudaFree(lenet);
+		LeNetCudaFree(lenetCuda);
+		LeNetCudaFree(deltas);
+		FeatureCudaFree(features);
+		FeatureCudaFree(errors);
+		CudaDeInit();
+		free(lenetCuda);
+		free(deltas);
+		free(features);
+		free(errors);
+		free(lenet);
+		free(train_data);
+		free(train_label);
+		free(test_data);
+		free(test_label);
 		system("pause");
 		return 1;
 	}
-#endif // GPU_ACCELLERATED
-
 
 #ifdef GPU_ACCELLERATED
-	printf("Testing GPU accellerated LeNet-5 implementation");
+	printf("Testing GPU accellerated LeNet-5 implementation\n");
 #else
-	printf("Testing sequential LeNet-5 implementation");
+	printf("Testing sequential LeNet-5 implementation\n");
 #endif // GPU_ACCELLERATED
 
 
@@ -174,9 +191,15 @@ int main()
 
 	printf("Testing time taken: %u sec\n", (unsigned)(clock() - start)/CLOCKS_PER_SEC);
 	//save(lenet, LENET_FILE);
-#ifdef GPU_ACCELLERATED
-	LeNetCudaFree(lenet);
-#endif // GPU_ACCELLERATED
+	LeNetCudaFree(lenetCuda);
+	LeNetCudaFree(deltas);
+	FeatureCudaFree(features);
+	FeatureCudaFree(errors);
+	CudaDeInit();
+	free(lenetCuda);
+	free(deltas);
+	free(features);
+	free(errors);
 	free(lenet);
 	free(train_data);
 	free(train_label);
