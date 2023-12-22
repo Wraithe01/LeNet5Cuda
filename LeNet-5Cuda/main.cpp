@@ -154,12 +154,7 @@ int main()
 		return 1;
 	}
 
-#ifdef GPU_ACCELLERATED
 	printf("Testing GPU accellerated LeNet-5 implementation\n");
-#else
-	printf("Testing sequential LeNet-5 implementation\n");
-#endif // GPU_ACCELLERATED
-
 
 	clock_t start = clock();
 
