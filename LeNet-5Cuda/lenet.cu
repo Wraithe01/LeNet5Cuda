@@ -147,7 +147,7 @@ int FeatureCudaFree(FeatureCuda* feature)
 					(output)[i0 + w0][i1 + w1] += (input)[i0][i1] * (weight)[w0][w1];	\
 }
 
-__global__ void ConvoluteKernelValid(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH)
+__global__ void ForwardConvoluteKernel(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH)
 {
 	int outFeature = blockIdx.z;
 	int outputFeatures = gridDim.z;
@@ -191,48 +191,19 @@ __global__ void ConvoluteKernelValid(double* input, double* output, double* weig
 	if ((threadIdx.x < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) && (threadIdx.y < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) &&
 		(threadH < (inputH - LENGTH_KERNEL + 1)) && (threadW < (inputW - LENGTH_KERNEL + 1)))
 	{
-		output[outFeature * (inputH - LENGTH_KERNEL + 1) * (inputW - LENGTH_KERNEL + 1) + threadH * (inputW - LENGTH_KERNEL + 1) + threadW] = acc;
+		output[outFeature * (inputH - LENGTH_KERNEL + 1) * (inputW - LENGTH_KERNEL + 1) + threadH * (inputW - LENGTH_KERNEL + 1) + threadW] = acc * (acc > 0);
 	}
 }
 
-void ConvoluteValid(double* input, double* output, double* weight, const int inputFeatures, const int outputFeatures, const int inputWidth, const int inputHeight)
+// Similar functionality as the code in Figure 16.4 of the textbook
+void ConvolutionForward(double* input, double* output, double* weight, double* bias, const int inputFeatures, const int outputFeatures, const int inputWidth, const int inputHeight)					\
 {
 	/*Blocks are fixed sized tiles to allow for any size of input*/
 	dim3 block(LENGTH_KERNEL_TILE, LENGTH_KERNEL_TILE, 1);
 	unsigned int tilesW = ceil((float)(inputWidth - LENGTH_KERNEL + 1) / (float)(LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1));
 	unsigned int tilesH = ceil((float)(inputHeight - LENGTH_KERNEL + 1) / (float)(LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1));
 	dim3 grid(tilesW, tilesH, outputFeatures);
-	ConvoluteKernelValid <<< grid, block >>> (input, output, weight, inputFeatures, inputWidth, inputHeight);
-}
-
-__global__ void ForwardReluKernel(double* feature, double* bias, const int featureWidth, const int featureHeight)
-{
-	int width = blockIdx.x * LENGTH_KERNEL_TILE + threadIdx.x;
-	int height = blockIdx.y * LENGTH_KERNEL_TILE + threadIdx.y;
-	int featureMap = blockIdx.z;
-
-	if ((width < featureWidth) && (height < featureHeight))
-	{
-		if ((feature[featureMap * featureHeight * featureWidth + height * featureWidth + width] + bias[featureMap]) < 0)
-			feature[featureMap * featureHeight * featureWidth + height * featureWidth + width] = 0;
-	}
-}
-
-void ForwardRelu(double* feature, double* bias, const int featureCount, const int featureWidth, const int featureHeight)
-{
-	/*Blocks are fixed sized tiles to allow for any size of input*/
-	dim3 block(LENGTH_KERNEL_TILE, LENGTH_KERNEL_TILE, 1);
-	unsigned int tilesW = ceil((float)featureWidth / (float)LENGTH_KERNEL_TILE);
-	unsigned int tilesH = ceil((float)featureHeight / (float)LENGTH_KERNEL_TILE);
-	dim3 grid(tilesW, tilesH, featureCount);
-	ForwardReluKernel <<< grid, block >>> (feature, bias, featureWidth, featureHeight);
-}
-
-// Similar functionality as the code in Figure 16.4 of the textbook
-void ConvolutionForward(double* input, double* output, double* weight, double* bias, const int inputFeatures, const int outputFeatures, const int inputWidth, const int inputHeight)					\
-{
-	ConvoluteValid(input, output, weight, inputFeatures, outputFeatures, inputWidth, inputHeight);
-	ForwardRelu(output, bias, outputFeatures, inputWidth - LENGTH_KERNEL + 1, inputHeight - LENGTH_KERNEL + 1);
+	ForwardConvoluteKernel << < grid, block >> > (input, output, weight, inputFeatures, inputWidth, inputHeight);
 }
 
 #define CONVOLUTION_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)\
