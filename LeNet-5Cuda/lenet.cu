@@ -533,7 +533,7 @@ static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label,
 	}
 }
 
-static void load_target(FeatureCuda *features, FeatureCuda *errors, int label)
+static void load_target(Feature *features, Feature *errors, int label)
 {
 	double *output = (double *)features->output;
 	double *error = (double *)errors->output;
