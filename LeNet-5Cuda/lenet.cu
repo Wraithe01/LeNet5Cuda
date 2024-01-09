@@ -370,6 +370,48 @@ FOREACH(k,GETLENGTH(inerror))										\
 		output[i][o0][o1] = input[i][o0*len0 + x0][o1*len1 + x1];								\
 	}																							\
 }
+__global__ void CUDA_SubsampForward(const double const* input, double* output, const uint32_t len, const uint32_t lenFeatIn, const uint32_t lenFeatOut)
+{
+	const uint32_t o1 = threadIdx.x + blockIdx.x * blockDim.x;
+	const uint32_t o0 = threadIdx.y + blockIdx.y * blockDim.y;
+	const uint32_t i = threadIdx.z + blockIdx.z * blockDim.z;
+
+	if (o0 < lenFeatOut && o1 < lenFeatOut)
+	{
+		int32_t x0 = 0;
+		int32_t x1 = 0;
+		int32_t ismax;
+		for (int32_t l0 = 0; l0 < len; ++l0)
+		{
+			for (int32_t l1 = 0; l1 < len; ++l1)
+			{
+				ismax = input[(i) * lenFeatIn * lenFeatIn + (o0 * len + l0) * lenFeatIn + (o1 * len + l1)] >
+						input[(i) * lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)];
+				x0 += ismax * (l0 - x0);
+				x1 += ismax * (l1 - x1);
+			}
+		}
+		output[(i) * lenFeatOut * lenFeatOut + (o0) * lenFeatOut + o1] = 
+		 input[(i) * lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)];
+	}
+}
+void SubsampForward(double* input, double* output, size_t insize, size_t inlayersize, size_t outsize, size_t outlayersise)
+{
+	size_t inTotalSize = insize * inlayersize * inlayersize;
+	size_t outTotalSize = outsize * outlayersise * outlayersise;
+
+	uint32_t len = inlayersize / outlayersise;
+	{
+		dim3 threads = {16, 16, 1};
+		dim3 blocks = {
+			(uint32_t)ceil((double)outlayersise/threads.x),
+			(uint32_t)ceil((double)outlayersise/threads.y),
+			(uint32_t)ceil((double)outsize/threads.z)
+		};
+		CUDA_SubsampForward<<<blocks, threads>>>(input, output, len, inlayersize, outlayersise);
+	}
+}
+
 
 #define SUBSAMP_MAX_BACKWARD(input,inerror,outerror)											\
 {																								\
@@ -523,7 +565,23 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	
 	CUDAMEMCPY_CHECK(featuresCuda->layer1, features->layer1, sizeof(features->layer1), cudaMemcpyDeviceToHost);
 	SUBSAMP_MAX_FORWARD(features->layer1, features->layer2);
-	
+	printf("\nCPU:\n");
+	for (uint32_t i = 0; i < LAYER2; ++i)
+		for (uint32_t j = 0; j < LENGTH_FEATURE2; ++j)
+			for (uint32_t k = 0; k < LENGTH_FEATURE2; ++k)
+				printf("%f ", features->layer2[i][j][k]);
+	printf("\n");
+
+	SubsampForward(featuresCuda->layer1, featuresCuda->layer2, 6, 28, 6, 14);
+	CUDAMEMCPY_CHECK(featuresCuda->layer2, features->layer2, sizeof(features->layer2), cudaMemcpyDeviceToHost);
+	printf("\nGPU:\n");
+	for (uint32_t i = 0; i < LAYER2; ++i)
+		for (uint32_t j = 0; j < LENGTH_FEATURE2; ++j)
+			for (uint32_t k = 0; k < LENGTH_FEATURE2; ++k)
+				printf("%f ", features->layer2[i][j][k]);
+	printf("\n");
+	system("pause");
+
 	CUDAMEMCPY_CHECK(features->layer2, featuresCuda->layer2, sizeof(features->layer2), cudaMemcpyHostToDevice);
 	ConvolutionForward(featuresCuda->layer2, featuresCuda->layer3, lenetCuda->weight2_3, lenetCuda->bias2_3,
 					LAYER2, LAYER3, LENGTH_FEATURE2, LENGTH_FEATURE2);
