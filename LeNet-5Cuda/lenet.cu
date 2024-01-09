@@ -399,19 +399,101 @@ void ConvolutionBackward(double* input, double* inError, double* outError, doubl
 		((double *)output)[j] = action(((double *)output)[j] + bias[j]);	\
 }
 
+__global__ void CUDA_DotFInit(double* output, const double const* input, const double const* weight, const size_t w1size, const size_t w2size)
+{
+	const uint32_t ioutput = threadIdx.x + blockIdx.x * blockDim.x;
+
+	if (ioutput < w2size)
+	{
+		double acc = 0.0;
+		for (uint32_t x = 0; x < w1size; ++x)
+			acc += input[x] * weight[ioutput + x * w2size];
+		output[ioutput] = acc;
+	}
+}
+__global__ void CUDA_DotFFinal(double* output, const double const* bias, const size_t w2size)
+{
+	const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if (tid < w2size)
+	{
+		const double relux = output[tid] + bias[tid];
+		output[tid] = relux * (relux > 0);
+	}
+}
+void DotProductForward(double* input, double* output, double* weight, size_t w1size, size_t w2size, double* bias)
+{
+	// 1D
+	{
+		int32_t threads = w2size;
+		int32_t blocks = 1;
+
+		CUDA_DotFInit << <blocks, threads >> > (output, input, weight, w1size, w2size);
+	}
+	// 1D
+	{
+		int32_t threads = w2size;
+		int32_t blocks = 1;
+		CUDA_DotFFinal << <blocks, threads >> > (output, bias, w2size);
+	}
+}
+
 #define DOT_PRODUCT_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)	\
 {																				\
 	for (int x = 0; x < GETLENGTH(weight); ++x)									\
 		for (int y = 0; y < GETLENGTH(*weight); ++y)							\
-			((double *)inerror)[x] += ((double *)outerror)[y] * weight[x][y];	\
+			((double *)inerror)[x] += ((double *)outerror)[y] * weight[x][y];printf("\ninerror\n");	\
 	FOREACH(i, GETCOUNT(inerror))												\
-		((double *)inerror)[i] *= actiongrad(((double *)input)[i]);				\
+		{((double *)inerror)[i] *= actiongrad(((double *)input)[i]); printf("%f ", inerror[i]);}printf("\nbd\n");				\
 	FOREACH(j, GETLENGTH(outerror))												\
-		bd[j] += ((double *)outerror)[j];										\
+		{bd[j] += ((double *)outerror)[j]; printf("%f ", bd[j]);}printf("\nwd\n");										\
 	for (int x = 0; x < GETLENGTH(weight); ++x)									\
 		for (int y = 0; y < GETLENGTH(*weight); ++y)							\
-			wd[x][y] += ((double *)input)[x] * ((double *)outerror)[y];			\
+			{wd[x][y] += ((double *)input)[x] * ((double *)outerror)[y];	printf("%f ", wd[x][y]);}		\
 }
+
+__global__ void CUDA_DotBinerror(const double const* input, double* inerror, const double const* outerror, const double const* weight, double* bd, const size_t w1size, const size_t w2size)
+{
+	// 120x threads
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	if (x < w1size)
+	{
+		double acc = 0.0;
+		for (uint32_t y = 0; y < w2size; ++y)
+		{
+			acc += outerror[y] * weight[y + x * w2size];
+		}
+		inerror[x] = acc * input[x] > 0;
+	}
+	if (x < w2size)
+		bd[x] += outerror[x];
+}
+__global__ void CUDA_DotBias(const double const* input, const double const* outerror, double* wd, const size_t w1size, const size_t w2size)
+{
+	// 8 blocks, 16 x 16 threads
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
+	if (x < w1size && y < w2size)
+		wd[y + x * w2size] += input[x] * outerror[y];
+}
+void DotProductBackward(double* input, double* inerror, double* outerror, double* weight, double* wd, double* bd, const size_t w1size, const size_t w2size)
+{
+	{
+		uint32_t threads = w1size;
+		uint32_t blocks = 1;
+		CUDA_DotBinerror<<<blocks, threads>>>(input, inerror, outerror, weight, bd, w1size, w2size);
+	}
+	{
+		// 120 x 10
+		dim3 threads = { 16, 16, 1 };
+		dim3 blocks = {
+			(uint32_t)ceil(((double)w1size / threads.x)),
+			(uint32_t)ceil(((double)w2size / threads.y)),
+			1 };
+		CUDA_DotBias<<<blocks, threads>>>(input, outerror, wd, w1size, w2size);
+	}
+}
+
+
 
 double relu(double x)
 {
@@ -450,18 +532,20 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	CUDAMEMCPY_CHECK(features->layer4, featuresCuda->layer4, sizeof(features->layer4), cudaMemcpyHostToDevice);
 	ConvolutionForward(featuresCuda->layer4, featuresCuda->layer5, lenetCuda->weight4_5, lenetCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
-	
-	CUDAMEMCPY_CHECK(featuresCuda->layer5, features->layer5, sizeof(features->layer5), cudaMemcpyDeviceToHost);
-	DOT_PRODUCT_FORWARD(features->layer5, features->output, lenet->weight5_6, lenet->bias5_6, action);
+
+	DotProductForward(featuresCuda->layer5, featuresCuda->output, lenetCuda->weight5_6, LAYER5, OUTPUT, lenetCuda->bias5_6);
+	CUDAMEMCPY_CHECK(featuresCuda->output, features->output, sizeof(features->output), cudaMemcpyDeviceToHost);
 }
 
 static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double), LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
-	DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
+	CUDAMEMCPY_CHECK(lenet->weight5_6, lenetCuda->weight5_6, sizeof(lenet->weight5_6), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(features->layer5, featuresCuda->layer5, sizeof(features->layer5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(errors->output, errorsCuda->output, sizeof(errors->output), cudaMemcpyHostToDevice);
+	DotProductBackward(featuresCuda->layer5, errorsCuda->layer5, errorsCuda->output, lenetCuda->weight5_6, deltasCuda->weight5_6, deltasCuda->bias5_6, LAYER5, OUTPUT);
 
 	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
 	CUDAMEMCPY_CHECK(features->layer4, featuresCuda->layer4, sizeof(features->layer4), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(errors->layer5, errorsCuda->layer5, sizeof(errors->layer5), cudaMemcpyHostToDevice);
 	ConvolutionBackward(featuresCuda->layer4, errorsCuda->layer4, errorsCuda->layer5, lenetCuda->weight4_5, deltasCuda->weight4_5, deltasCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	CUDAMEMCPY_CHECK(deltasCuda->weight4_5, deltas->weight4_5, sizeof(deltas->weight4_5), cudaMemcpyDeviceToHost);
