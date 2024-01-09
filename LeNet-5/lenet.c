@@ -71,17 +71,6 @@ SOFTWARE.
 	for (int x = 0; x < GETLENGTH(weight); ++x)								\
 		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
 			CONVOLUTE_FULL(outerror[y], inerror[x], weight[x][y]);			\
-	FOREACH(k,GETLENGTH(inerror))										\
-	{\
-	printf("\n");															\
-	FOREACH(i0,GETLENGTH(inerror[k]))										\
-	{																		\
-		FOREACH(i1,GETLENGTH(*(inerror[k])))								\
-			printf("%f ", inerror[k][i0][i1]);							\
-		printf("\n");														\
-	}																		\
-	}\
-	system("pause");														\
 	FOREACH(i, GETCOUNT(inerror))											\
 		((double *)inerror)[i] *= actiongrad(((double *)input)[i]);			\
 	FOREACH(j, GETLENGTH(outerror))											\

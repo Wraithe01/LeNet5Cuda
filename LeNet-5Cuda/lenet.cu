@@ -118,9 +118,12 @@ int FeatureCudaFree(FeatureCuda* feature)
 	return 0;
 }
 
-#define CUDAMEMCPY_CHECK(src, dest, bytes, type)												 \
-	if (cudaMemcpy(dest, src, bytes, type) != cudaSuccess)								 \
-		fprintf(stderr, "ERROR: cudaMemCpy %s from %s to %s failed!\n", #type, #src, #dest); \
+#define CUDAMEMCPY_CHECK(src, dest, bytes, type)												      \
+{																								      \
+	cudaError_t err;																				  \
+	if ((err = cudaMemcpy(dest, src, bytes, type)) != cudaSuccess)								      \
+		fprintf(stderr, "ERROR(%i): cudaMemCpy %s from %s to %s failed!\n", err, #type, #src, #dest); \
+}
 
 
 #define GETLENGTH(array) (sizeof(array)/sizeof(*(array)))
@@ -147,7 +150,7 @@ int FeatureCudaFree(FeatureCuda* feature)
 					(output)[i0 + w0][i1 + w1] += (input)[i0][i1] * (weight)[w0][w1];	\
 }
 
-__global__ void ForwardConvoluteKernel(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH, double* bias)
+__global__ void ForwardConvoluteKernel(const double const* input, double* output, const double const* weight, const int inputFeatures, const int inputW, const int inputH, const double const* bias)
 {
 	int outFeature = blockIdx.z;
 	int outputFeatures = gridDim.z;
@@ -209,7 +212,7 @@ void ConvolutionForward(double* input, double* output, double* weight, double* b
 	ForwardConvoluteKernel <<< grid, block >>> (input, output, weight, inputFeatures, inputWidth, inputHeight, bias);
 }
 
-__global__ void ReverseConvoluteKernel(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH)
+__global__ void ReverseConvoluteKernel(const double const* input, double* output, const double const* weight, const int inputFeatures, const int inputW, const int inputH)
 {
 	int outFeature = blockIdx.z;
 	int outputFeatures = gridDim.z;
@@ -269,7 +272,7 @@ __global__ void ReverseConvoluteKernel(double* input, double* output, double* we
 	}
 }
 
-__global__ void BackwardRelugrad(double* input, double* error, const int size)
+__global__ void BackwardRelugrad(const double const* input, double* error, const int size)
 {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -279,7 +282,7 @@ __global__ void BackwardRelugrad(double* input, double* error, const int size)
 	}
 }
 
-__global__ void BiasUpdate(double* bias, double* error, const int features, const int size)
+__global__ void BiasUpdate(double* bias, const double const* error, const int features, const int size)
 {
 	double acc = 0;
 	if (threadIdx.x < features)
@@ -292,7 +295,7 @@ __global__ void BiasUpdate(double* bias, double* error, const int features, cons
 	}
 }
 
-__global__ void WeightConvoluteKernel(double* input, double* weight, double* output)
+__global__ void WeightConvoluteKernel(const double const* input, double* weight, const double const* output)
 {
 	double acc = 0;
 
@@ -301,7 +304,7 @@ __global__ void WeightConvoluteKernel(double* input, double* weight, double* out
 	data[threadIdx.y * blockDim.x + threadIdx.x] = input[blockIdx.x * blockDim.y * blockDim.x +
 														 threadIdx.y * blockDim.x +
 														 threadIdx.x];
-	if ((threadIdx.y < blockDim.y - LENGTH_KERNEL + 1) && (threadIdx.x < blockDim.x - LENGTH_KERNEL + 1))
+	if ((threadIdx.y < (blockDim.y - LENGTH_KERNEL + 1)) && (threadIdx.x < (blockDim.x - LENGTH_KERNEL + 1)))
 	{
 		data[blockDim.y * blockDim.x + threadIdx.y * (blockDim.x - LENGTH_KERNEL + 1) + threadIdx.x] = output[blockIdx.y * (blockDim.y - LENGTH_KERNEL + 1) * (blockDim.x - LENGTH_KERNEL + 1) +
 																											  threadIdx.y * (blockDim.x - LENGTH_KERNEL + 1) +
@@ -339,63 +342,11 @@ void ConvolutionBackward(double* input, double* inError, double* outError, doubl
 						LENGTH_KERNEL_TILE* LENGTH_KERNEL_TILE >>> (input, inError, inputFeatures * inputWidth * inputHeight);
 	BiasUpdate <<< 1, outputFeatures >>> (biasDeltas, outError, outputFeatures, (inputWidth - LENGTH_KERNEL + 1) * (inputHeight - LENGTH_KERNEL + 1));
 	
+	/*Kernel does not support any size feature. ran out of time to make generalized*/
 	block = dim3(inputWidth, inputHeight, 1);
 	grid = dim3(inputFeatures, outputFeatures, 1);
-	WeightConvoluteKernel <<< grid, block, inputWidth * inputHeight + (inputWidth - LENGTH_KERNEL + 1) * (inputHeight - LENGTH_KERNEL + 1) >>> (input, weightDeltas, outError);
-
-	LeNet5 test = { 0 };
-	CUDAMEMCPY_CHECK(weightDeltas, test.weight4_5, sizeof(test.weight4_5), cudaMemcpyDeviceToHost);
-
-	for (int k = 0; k < 1; k++)
-		for (int l = 0; l < 10; l++)
-	{
-		printf("\n");
-		for (int i = 0; i < LENGTH_KERNEL; i++)
-		{
-			for (int j = 0; j < LENGTH_KERNEL; j++)
-			{
-				printf("%f ", test.weight4_5[k][l][i][j]);
-			}
-			printf("\n");
-		}
-	}
-	system("pause");
-}
-
-#define CONVOLUTE_FULL(input,output,weight)												\
-{																						\
-	FOREACH(i0,GETLENGTH(input))														\
-		FOREACH(i1,GETLENGTH(*(input)))													\
-			FOREACH(w0,GETLENGTH(weight))												\
-				FOREACH(w1,GETLENGTH(*(weight)))										\
-					(output)[i0 + w0][i1 + w1] += (input)[i0][i1] * (weight)[w0][w1];	\
-}
-
-#define CONVOLUTION_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)\
-{																			\
-	for (int x = 0; x < GETLENGTH(weight); ++x)								\
-		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
-			CONVOLUTE_FULL(outerror[y], inerror[x], weight[x][y]);			\
-	FOREACH(i, GETCOUNT(inerror))											\
-		((double *)inerror)[i] *= actiongrad(((double *)input)[i]);			\
-	FOREACH(j, GETLENGTH(outerror))											\
-		FOREACH(i, GETCOUNT(outerror[j]))									\
-		bd[j] += ((double *)outerror[j])[i];								\
-	for (int x = 0; x < GETLENGTH(weight); ++x)								\
-		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
-			CONVOLUTE_VALID(input[x], wd[x][y], outerror[y]);				\
-FOREACH(k,1)										\
-	FOREACH(l,10)\
-	{\
-	printf("\n");															\
-	FOREACH(i0,GETLENGTH(wd[k][l]))										\
-	{																		\
-		FOREACH(i1,GETLENGTH(*(wd[k][l])))								\
-			printf("%f ", wd[k][l][i0][i1]);							\
-		printf("\n");														\
-	}																		\
-	}\
-	system("pause");														\
+	WeightConvoluteKernel <<< grid, block, (inputWidth * inputHeight + (inputWidth - LENGTH_KERNEL + 1) * (inputHeight - LENGTH_KERNEL + 1)) * sizeof(double) >>> 
+								(input, weightDeltas, outError);
 }
 
 // Similar functionality as the code in Figure 16.5 of the textbook
@@ -483,7 +434,6 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	CUDAMEMCPY_CHECK(lenet->bias4_5, lenetCuda->bias4_5, sizeof(lenet->bias4_5), cudaMemcpyHostToDevice);
 	CUDAMEMCPY_CHECK(lenet->bias5_6, lenetCuda->bias5_6, sizeof(lenet->bias5_6), cudaMemcpyHostToDevice);
 
-	CUDAMEMCPY_CHECK(features->input, featuresCuda->input, sizeof(features->input), cudaMemcpyHostToDevice);
 	ConvolutionForward(featuresCuda->input, featuresCuda->layer1, lenetCuda->weight0_1, lenetCuda->bias0_1,
 					   INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
 	
@@ -503,6 +453,7 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	
 	CUDAMEMCPY_CHECK(featuresCuda->layer5, features->layer5, sizeof(features->layer5), cudaMemcpyDeviceToHost);
 	DOT_PRODUCT_FORWARD(features->layer5, features->output, lenet->weight5_6, lenet->bias5_6, action);
+	CUDAMEMCPY_CHECK(features->output, featuresCuda->output, sizeof(features->output), cudaMemcpyHostToDevice);
 }
 
 static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double), LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
@@ -510,29 +461,41 @@ static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *fe
 	DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
 
 	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(deltas->weight4_5, deltasCuda->weight4_5, sizeof(deltas->weight4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(deltas->bias4_5, deltasCuda->bias4_5, sizeof(deltas->bias4_5), cudaMemcpyHostToDevice);
-
 	CUDAMEMCPY_CHECK(features->layer4, featuresCuda->layer4, sizeof(features->layer4), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(errors->layer4, errorsCuda->layer4, sizeof(errors->layer4), cudaMemcpyHostToDevice);
 	CUDAMEMCPY_CHECK(errors->layer5, errorsCuda->layer5, sizeof(errors->layer5), cudaMemcpyHostToDevice);
-
-	CONVOLUTION_BACKWARD(features->layer4, errors->layer4, errors->layer5, lenet->weight4_5, deltas->weight4_5, deltas->bias4_5, actiongrad);
 	ConvolutionBackward(featuresCuda->layer4, errorsCuda->layer4, errorsCuda->layer5, lenetCuda->weight4_5, deltasCuda->weight4_5, deltasCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
+	CUDAMEMCPY_CHECK(deltasCuda->weight4_5, deltas->weight4_5, sizeof(deltas->weight4_5), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(deltasCuda->bias4_5, deltas->bias4_5, sizeof(deltas->bias4_5), cudaMemcpyDeviceToHost);
+
+	CUDAMEMCPY_CHECK(errorsCuda->layer4, errors->layer4, sizeof(errors->layer4), cudaMemcpyDeviceToHost);
 	SUBSAMP_MAX_BACKWARD(features->layer3, errors->layer3, errors->layer4);
 	
+	CUDAMEMCPY_CHECK(lenet->weight2_3, lenetCuda->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(features->layer2, featuresCuda->layer2, sizeof(features->layer2), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(errors->layer3, errorsCuda->layer3, sizeof(errors->layer3), cudaMemcpyHostToDevice);
 	ConvolutionBackward(featuresCuda->layer2, errorsCuda->layer2, errorsCuda->layer3, lenetCuda->weight2_3, deltasCuda->weight2_3, deltasCuda->bias2_3,
 					LAYER2, LAYER3, LENGTH_FEATURE2, LENGTH_FEATURE2);
+	CUDAMEMCPY_CHECK(deltasCuda->weight2_3, deltas->weight2_3, sizeof(deltas->weight2_3), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(deltasCuda->bias2_3, deltas->bias2_3, sizeof(deltas->bias2_3), cudaMemcpyDeviceToHost);
+
+	CUDAMEMCPY_CHECK(errorsCuda->layer2, errors->layer2, sizeof(errors->layer2), cudaMemcpyDeviceToHost);
 	SUBSAMP_MAX_BACKWARD(features->layer1, errors->layer1, errors->layer2);
 	
+	CUDAMEMCPY_CHECK(lenet->weight0_1, lenetCuda->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(features->input, featuresCuda->input, sizeof(features->input), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(errors->layer1, errorsCuda->layer1, sizeof(errors->layer1), cudaMemcpyHostToDevice);
 	ConvolutionBackward(featuresCuda->input, errorsCuda->input, errorsCuda->layer1, lenetCuda->weight0_1, deltasCuda->weight0_1, deltasCuda->bias0_1,
 					INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
+	CUDAMEMCPY_CHECK(deltasCuda->weight0_1, deltas->weight0_1, sizeof(deltas->weight0_1), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(deltasCuda->bias0_1, deltas->bias0_1, sizeof(deltas->bias0_1), cudaMemcpyDeviceToHost);
+
+	CUDAMEMCPY_CHECK(errorsCuda->input, errors->input, sizeof(errors->input), cudaMemcpyDeviceToHost);
 }
 
-static inline void load_input(Feature *features, image input)
+static inline void load_input(FeatureCuda *features, image input)
 {
-	double (*layer0)[LENGTH_FEATURE0][LENGTH_FEATURE0] = features->input;
+	double layer0[LENGTH_FEATURE0][LENGTH_FEATURE0];
 	const long sz = sizeof(image) / sizeof(**input);
 	double mean = 0, std = 0;
 	FOREACH(j, sizeof(image) / sizeof(*input))
@@ -546,8 +509,9 @@ static inline void load_input(Feature *features, image input)
 	FOREACH(j, sizeof(image) / sizeof(*input))
 		FOREACH(k, sizeof(*input) / sizeof(**input))
 	{
-		layer0[0][j + PADDING][k + PADDING] = (input[j][k] - mean) / std;
+		layer0[j + PADDING][k + PADDING] = (input[j][k] - mean) / std;
 	}
+	CUDAMEMCPY_CHECK(layer0, features->input, LENGTH_FEATURE0 * LENGTH_FEATURE0 * sizeof(double), cudaMemcpyHostToDevice);
 }
 
 static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label, int count)
@@ -570,11 +534,37 @@ static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label,
 	}
 }
 
-static void load_target(Feature *features, Feature *errors, int label)
+__global__ void softmaxKernel(const double const* input, double* output, const int label)
 {
-	double *output = (double *)features->output;
-	double *error = (double *)errors->output;
-	softmax(output, error, label, GETCOUNT(features->output));
+
+	__shared__ double inner;
+	if (threadIdx.x == 0)
+		inner = 0;
+	double loss = 0;
+
+	double x = input[threadIdx.x];
+
+	double res = 0;
+	for (int j = 0; j < blockDim.x; ++j)
+	{
+		res += exp(input[j] - x);
+	}
+	loss = 1. / res;
+	atomicAdd_block(&inner, -loss*loss);
+	__syncthreads();
+	if (threadIdx.x == label)
+	{
+		inner += loss;
+	}
+	__syncthreads();
+	loss *= (threadIdx.x == label) - loss - inner;
+
+	output[threadIdx.x] = loss;
+}
+
+static void load_target(FeatureCuda *features, FeatureCuda *errors, int label)
+{
+	softmaxKernel <<<1, OUTPUT >>> (features->output, errors->output, label);
 }
 
 static uint8 get_result(Feature *features, uint8 count)
@@ -622,9 +612,9 @@ void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNe
 		Feature errors = { 0 };
 		LeNet5	deltas = { 0 };
 
-		load_input(&features, inputs[i]);
+		load_input(featuresCuda, inputs[i]);
 		forward(lenet, &features, relu, lenetCuda, featuresCuda); // Forward propagation
-		load_target(&features, &errors, labels[i]);
+		load_target(featuresCuda, errorsCuda, labels[i]);
 
 		backward(lenet, &deltas, &errors, &features, relugrad, lenetCuda, deltasCuda, featuresCuda, errorsCuda); // Backpropagation
 		FOREACH(j, GETCOUNT(LeNet5))
@@ -653,7 +643,7 @@ void Train(LeNet5 *lenet, image input, uint8 label)
 uint8 Predict(LeNet5 *lenet, image input,uint8 count, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
 {
 	Feature features = { 0 };
-	load_input(&features, input);
+	load_input(featuresCuda, input);
 	forward(lenet, &features, relu, lenetCuda, featuresCuda);
 	return get_result(&features, count);
 }
