@@ -399,6 +399,31 @@ void ConvolutionBackward(double* input, double* inError, double* outError, doubl
 		((double *)output)[j] = action(((double *)output)[j] + bias[j]);	\
 }
 
+__global__ void CUDA_DotF(double* output, const double const* input, const double const* weight, const double const* bias, const size_t w1size, const size_t w2size)
+{
+	const uint32_t ioutput = threadIdx.x + blockIdx.x * blockDim.x;
+
+	if (ioutput < w2size)
+	{
+		double acc = 0.0;
+		for (uint32_t x = 0; x < w1size; ++x)
+			acc += input[x] * weight[ioutput + x * w2size];
+		acc += bias[ioutput];
+		output[ioutput] = acc * (acc > 0);
+	}
+}
+
+void DotProductForward(double* input, double* output, double* weight, size_t w1size, size_t w2size, double* bias)
+{
+	// 1D
+	{
+		int32_t threads = w2size;
+		int32_t blocks = 1;
+
+		CUDA_DotF << <blocks, threads >> > (output, input, weight, bias, w1size, w2size);
+	}
+}
+
 #define DOT_PRODUCT_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)	\
 {																				\
 	for (int x = 0; x < GETLENGTH(weight); ++x)									\
