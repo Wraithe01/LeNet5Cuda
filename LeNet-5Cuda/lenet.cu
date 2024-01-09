@@ -432,6 +432,87 @@ void SubsampForward(double* input, double* output, size_t insize, size_t inlayer
 	}																							\
 }
 
+__global__ void CUDA_DotBinerror(const double const* input, double* inerror, const double const* outerror, const double const* weight, double* bd, const size_t w1size, const size_t w2size)
+{
+	// 120x threads
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	if (x < w1size)
+	{
+		double acc = 0.0;
+		for (uint32_t y = 0; y < w2size; ++y)
+		{
+			acc += outerror[y] * weight[y + x * w2size];
+		}
+		inerror[x] = acc * input[x] > 0;
+	}
+	if (x < w2size)
+		bd[x] = outerror[x];
+}
+__global__ void CUDA_DotBias(const double const* input, const double const* outerror, double* wd, const size_t w1size, const size_t w2size)
+{
+	// 8 blocks, 16 x 16 threads
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
+	if (x < w1size && y < w2size)
+		wd[y + x * w2size] = input[x] * outerror[y];
+}
+void DotProductBackward(double* input, double* inerror, double* outerror, double* weight, double* wd, double* bd, const size_t w1size, const size_t w2size)
+{
+	{
+		uint32_t threads = w1size;
+		uint32_t blocks = 1;
+		CUDA_DotBinerror << <blocks, threads >> > (input, inerror, outerror, weight, bd, w1size, w2size);
+	}
+	{
+		// 120 x 10
+		dim3 threads = { 16, 16, 1 };
+		dim3 blocks = {
+			(uint32_t)ceil(((double)w1size / threads.x)),
+			(uint32_t)ceil(((double)w2size / threads.y)),
+			1 };
+		CUDA_DotBias << <blocks, threads >> > (input, outerror, wd, w1size, w2size);
+	}
+}
+
+__global__ void CUDA_SubsampBackward(const double const* input, double* inerror, double* outerror, const uint32_t len, const uint32_t lenFeatIn, const uint32_t lenFeatOut)
+{
+	const uint32_t o1 = threadIdx.x + blockIdx.x * blockDim.x;
+	const uint32_t o0 = threadIdx.y + blockIdx.y * blockDim.y;
+	const uint32_t i = threadIdx.z + blockIdx.z * blockDim.z;
+
+	if (o0 < lenFeatOut && o1 < lenFeatOut)
+	{
+		int32_t x0 = 0;
+		int32_t x1 = 0;
+		int32_t ismax;
+		for (int32_t l0 = 0; l0 < len; ++l0)
+		{
+			for (int32_t l1 = 0; l1 < len; ++l1)
+			{
+				ismax = input[(i)*lenFeatIn * lenFeatIn + (o0 * len + l0) * lenFeatIn + (o1 * len + l1)] >
+					input[(i)*lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)];
+				x0 += ismax * (l0 - x0);
+				x1 += ismax * (l1 - x1);
+			}
+		}
+		inerror[(i)*lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)] =
+			outerror[(i)*lenFeatOut * lenFeatOut + (o0)*lenFeatOut + (o1)];
+	}
+}
+void SubsampBackward(double* input, double* inerror, double* outerror, size_t inlayersize, size_t outsize, size_t outlayersise)
+{
+	uint32_t len = inlayersize / outlayersise;
+	{
+		dim3 threads = { 16, 16, 1 };
+		dim3 blocks = {
+			(uint32_t)ceil((double)outlayersise / threads.x),
+			(uint32_t)ceil((double)outlayersise / threads.y),
+			(uint32_t)ceil((double)outsize / threads.z)
+		};
+		CUDA_SubsampBackward << <threads, blocks >> > (input, inerror, outerror, len, inlayersize, outlayersise);
+	}
+}
+
 #define DOT_PRODUCT_FORWARD(input,output,weight,bias,action)				\
 {																			\
 	for (int x = 0; x < GETLENGTH(weight); ++x)								\
@@ -490,17 +571,8 @@ double relugrad(double y)
 	return y > 0;
 }
 
-static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
+static void forward(LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
 {
-	CUDAMEMCPY_CHECK(lenet->weight0_1, lenetCuda->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->weight2_3, lenetCuda->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->weight5_6, lenetCuda->weight5_6, sizeof(lenet->weight5_6), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias0_1, lenetCuda->bias0_1, sizeof(lenet->bias0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias2_3, lenetCuda->bias2_3, sizeof(lenet->bias2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias4_5, lenetCuda->bias4_5, sizeof(lenet->bias4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias5_6, lenetCuda->bias5_6, sizeof(lenet->bias5_6), cudaMemcpyHostToDevice);
-
 	ConvolutionForward(featuresCuda->input, featuresCuda->layer1, lenetCuda->weight0_1, lenetCuda->bias0_1,
 					   INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
 	SubsampForward(featuresCuda->layer1, featuresCuda->layer2, LAYER1, LENGTH_FEATURE1, LAYER2, LENGTH_FEATURE2);
@@ -510,44 +582,19 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	ConvolutionForward(featuresCuda->layer4, featuresCuda->layer5, lenetCuda->weight4_5, lenetCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	DotProductForward(featuresCuda->layer5, featuresCuda->output, lenetCuda->weight5_6, LAYER5, OUTPUT, lenetCuda->bias5_6);
-	CUDAMEMCPY_CHECK(featuresCuda->output, features->output, sizeof(features->output), cudaMemcpyDeviceToHost);
 }
 
-static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double), LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
+static void backward(LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
-	DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
-
-	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(features->layer4, featuresCuda->layer4, sizeof(features->layer4), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(errors->layer5, errorsCuda->layer5, sizeof(errors->layer5), cudaMemcpyHostToDevice);
+	DotProductBackward(featuresCuda->layer5, errorsCuda->layer5, errorsCuda->output, lenetCuda->weight5_6, deltasCuda->weight5_6, deltasCuda->bias5_6, LAYER5, OUTPUT);
 	ConvolutionBackward(featuresCuda->layer4, errorsCuda->layer4, errorsCuda->layer5, lenetCuda->weight4_5, deltasCuda->weight4_5, deltasCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
-	CUDAMEMCPY_CHECK(deltasCuda->weight4_5, deltas->weight4_5, sizeof(deltas->weight4_5), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(deltasCuda->bias4_5, deltas->bias4_5, sizeof(deltas->bias4_5), cudaMemcpyDeviceToHost);
-
-	CUDAMEMCPY_CHECK(errorsCuda->layer4, errors->layer4, sizeof(errors->layer4), cudaMemcpyDeviceToHost);
-	SUBSAMP_MAX_BACKWARD(features->layer3, errors->layer3, errors->layer4);
-	
-	CUDAMEMCPY_CHECK(lenet->weight2_3, lenetCuda->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(features->layer2, featuresCuda->layer2, sizeof(features->layer2), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(errors->layer3, errorsCuda->layer3, sizeof(errors->layer3), cudaMemcpyHostToDevice);
+	SubsampBackward(featuresCuda->layer3, errorsCuda->layer3, errorsCuda->layer4, LENGTH_FEATURE3, LAYER3, LENGTH_FEATURE4);
 	ConvolutionBackward(featuresCuda->layer2, errorsCuda->layer2, errorsCuda->layer3, lenetCuda->weight2_3, deltasCuda->weight2_3, deltasCuda->bias2_3,
 					LAYER2, LAYER3, LENGTH_FEATURE2, LENGTH_FEATURE2);
-	CUDAMEMCPY_CHECK(deltasCuda->weight2_3, deltas->weight2_3, sizeof(deltas->weight2_3), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(deltasCuda->bias2_3, deltas->bias2_3, sizeof(deltas->bias2_3), cudaMemcpyDeviceToHost);
-
-	CUDAMEMCPY_CHECK(errorsCuda->layer2, errors->layer2, sizeof(errors->layer2), cudaMemcpyDeviceToHost);
-	SUBSAMP_MAX_BACKWARD(features->layer1, errors->layer1, errors->layer2);
-	
-	CUDAMEMCPY_CHECK(lenet->weight0_1, lenetCuda->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(features->input, featuresCuda->input, sizeof(features->input), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(errors->layer1, errorsCuda->layer1, sizeof(errors->layer1), cudaMemcpyHostToDevice);
+	SubsampBackward(featuresCuda->layer1, errorsCuda->layer1, errorsCuda->layer2, LENGTH_FEATURE1, LAYER1, LENGTH_FEATURE2);
 	ConvolutionBackward(featuresCuda->input, errorsCuda->input, errorsCuda->layer1, lenetCuda->weight0_1, deltasCuda->weight0_1, deltasCuda->bias0_1,
 					INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
-	CUDAMEMCPY_CHECK(deltasCuda->weight0_1, deltas->weight0_1, sizeof(deltas->weight0_1), cudaMemcpyDeviceToHost);
-	CUDAMEMCPY_CHECK(deltasCuda->bias0_1, deltas->bias0_1, sizeof(deltas->bias0_1), cudaMemcpyDeviceToHost);
-
-	CUDAMEMCPY_CHECK(errorsCuda->input, errors->input, sizeof(errors->input), cudaMemcpyDeviceToHost);
 }
 
 static inline void load_input(FeatureCuda *features, image input)
@@ -591,17 +638,20 @@ static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label,
 	}
 }
 
-static void load_target(Feature *features, Feature *errors, int label)
+static void load_target(FeatureCuda *features, FeatureCuda *errors, int label)
 {
-	double *output = (double *)features->output;
-	double *error = (double *)errors->output;
+	double output[OUTPUT];
+	double error[OUTPUT] = { 0 };
+	CUDAMEMCPY_CHECK(features->output, output, OUTPUT * sizeof(double), cudaMemcpyDeviceToHost);
 	softmax(output, error, label, GETCOUNT(features->output));
+	CUDAMEMCPY_CHECK(error, errors->output, OUTPUT * sizeof(double), cudaMemcpyHostToDevice);
 }
 
-static uint8 get_result(Feature *features, uint8 count)
+static uint8 get_result(FeatureCuda *features, uint8 count)
 {
-	double *output = (double *)features->output; 
-	const int outlen = GETCOUNT(features->output);
+	double output[OUTPUT];
+	CUDAMEMCPY_CHECK(features->output, output, OUTPUT * sizeof(double), cudaMemcpyDeviceToHost);
+
 	uint8 result = 0;
 	double maxvalue = *output;
 	for (uint8 i = 1; i < count; ++i)
@@ -636,18 +686,35 @@ void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNe
 {
 	double buffer[GETCOUNT(LeNet5)] = { 0 };
 	int i = 0;
+
+	CUDAMEMCPY_CHECK(lenet->weight0_1, lenetCuda->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->weight2_3, lenetCuda->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->weight5_6, lenetCuda->weight5_6, sizeof(lenet->weight5_6), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias0_1, lenetCuda->bias0_1, sizeof(lenet->bias0_1), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias2_3, lenetCuda->bias2_3, sizeof(lenet->bias2_3), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias4_5, lenetCuda->bias4_5, sizeof(lenet->bias4_5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias5_6, lenetCuda->bias5_6, sizeof(lenet->bias5_6), cudaMemcpyHostToDevice);
+
 	for (i = 0; i < batchSize; ++i)
 	{ // For each training image
-		// should be able to delete these once all parts are moved to cuda
-		Feature features = { 0 };
-		Feature errors = { 0 };
 		LeNet5	deltas = { 0 };
 
 		load_input(featuresCuda, inputs[i]);
-		forward(lenet, &features, relu, lenetCuda, featuresCuda); // Forward propagation
-		load_target(&features, &errors, labels[i]);
+		forward(lenetCuda, featuresCuda); // Forward propagation
+		load_target(featuresCuda, errorsCuda, labels[i]);
+		backward(lenetCuda, deltasCuda, featuresCuda, errorsCuda); // Backpropagation
 
-		backward(lenet, &deltas, &errors, &features, relugrad, lenetCuda, deltasCuda, featuresCuda, errorsCuda); // Backpropagation
+		CUDAMEMCPY_CHECK(deltasCuda->weight0_1, deltas.weight0_1, sizeof(deltas.weight0_1), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->bias0_1, deltas.bias0_1, sizeof(deltas.bias0_1), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->weight2_3, deltas.weight2_3, sizeof(deltas.weight2_3), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->bias2_3, deltas.bias2_3, sizeof(deltas.bias2_3), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->weight4_5, deltas.weight4_5, sizeof(deltas.weight4_5), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->bias4_5, deltas.bias4_5, sizeof(deltas.bias4_5), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->weight4_5, deltas.weight5_6, sizeof(deltas.weight5_6), cudaMemcpyDeviceToHost);
+		CUDAMEMCPY_CHECK(deltasCuda->bias4_5, deltas.bias5_6, sizeof(deltas.bias5_6), cudaMemcpyDeviceToHost);
+		
+		// if time, cudafy!
 		FOREACH(j, GETCOUNT(LeNet5))
 				buffer[j] += ((double *)&deltas)[j];
 	}
@@ -673,10 +740,17 @@ void Train(LeNet5 *lenet, image input, uint8 label)
 
 uint8 Predict(LeNet5 *lenet, image input,uint8 count, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
 {
-	Feature features = { 0 };
+	CUDAMEMCPY_CHECK(lenet->weight0_1, lenetCuda->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->weight2_3, lenetCuda->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->weight5_6, lenetCuda->weight5_6, sizeof(lenet->weight5_6), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias0_1, lenetCuda->bias0_1, sizeof(lenet->bias0_1), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias2_3, lenetCuda->bias2_3, sizeof(lenet->bias2_3), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias4_5, lenetCuda->bias4_5, sizeof(lenet->bias4_5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(lenet->bias5_6, lenetCuda->bias5_6, sizeof(lenet->bias5_6), cudaMemcpyHostToDevice);
 	load_input(featuresCuda, input);
-	forward(lenet, &features, relu, lenetCuda, featuresCuda);
-	return get_result(&features, count);
+	forward(lenetCuda, featuresCuda);
+	return get_result(featuresCuda, count);
 }
 
 void Initial(LeNet5 *lenet)
