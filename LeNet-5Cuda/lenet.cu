@@ -223,6 +223,40 @@ int FeatureCudaFree(FeatureCuda* feature)
 		((double *)output)[j] = action(((double *)output)[j] + bias[j]);	\
 }
 
+__global__ void CUDA_DotFInit(double* output, double* input, double* weight, const size_t w1size, size_t w2size)
+{
+	const int32_t ioutput = threadIdx.y;
+	const int32_t iweight5 = threadIdx.x + blockIdx.x * blockDim.x;
+
+	if (iweight5 <= w1size && ioutput <= w2size)
+		((double*)output)[ioutput] = ((double*)input)[iweight5] * weight[iweight5 + ioutput * w1size];
+}
+__global__ void CUDA_DotFFinal(double* output, double* bias)
+{
+	const int32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const double relux = output[tid] + bias[tid];
+	output[tid] = relux * (relux > 0);
+}
+void DotProductForward(double* input, double* output, double* weight, size_t w1size, size_t w2size, double* bias)
+{
+	// 2D
+	{
+		dim3 thread2D = { 16, 16, 1 };
+		dim3 block2D = {
+			(uint32_t)ceil(w1size / thread2D.x),
+			(uint32_t)ceil(w2size / thread2D.y),
+			1
+		};
+		CUDA_DotFInit << <block2D, thread2D >> > (output, input, weight, w1size, w2size);
+	}
+	// 1D
+	{
+		int32_t threads = GETLENGTH(bias);
+		int32_t blocks = 1;
+		CUDA_DotFFinal << <blocks, threads >> > (output, bias);
+	}
+}
+
 #define DOT_PRODUCT_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)	\
 {																				\
 	for (int x = 0; x < GETLENGTH(weight); ++x)									\
