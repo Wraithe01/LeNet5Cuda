@@ -71,17 +71,6 @@ SOFTWARE.
 	for (int x = 0; x < GETLENGTH(weight); ++x)								\
 		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
 			CONVOLUTE_FULL(outerror[y], inerror[x], weight[x][y]);			\
-	FOREACH(k,GETLENGTH(inerror))										\
-	{\
-	printf("\n");															\
-	FOREACH(i0,GETLENGTH(inerror[k]))										\
-	{																		\
-		FOREACH(i1,GETLENGTH(*(inerror[k])))								\
-			printf("%f ", inerror[k][i0][i1]);							\
-		printf("\n");														\
-	}																		\
-	}\
-	system("pause");														\
 	FOREACH(i, GETCOUNT(inerror))											\
 		((double *)inerror)[i] *= actiongrad(((double *)input)[i]);			\
 	FOREACH(j, GETLENGTH(outerror))											\
@@ -139,7 +128,7 @@ SOFTWARE.
 		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
 			((double *)output)[y] += ((double *)input)[x] * weight[x][y];	\
 	FOREACH(j, GETLENGTH(bias))												\
-		{((double *)output)[j] = action(((double *)output)[j] + bias[j]); printf("%f\n", output[j]);}	\
+		((double *)output)[j] = action(((double *)output)[j] + bias[j]);	\
 }
 
 #define DOT_PRODUCT_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)	\
