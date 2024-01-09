@@ -543,6 +543,8 @@ static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *fe
 	CUDAMEMCPY_CHECK(features->layer5, featuresCuda->layer5, sizeof(features->layer5), cudaMemcpyHostToDevice);
 	CUDAMEMCPY_CHECK(errors->output, errorsCuda->output, sizeof(errors->output), cudaMemcpyHostToDevice);
 	DotProductBackward(featuresCuda->layer5, errorsCuda->layer5, errorsCuda->output, lenetCuda->weight5_6, deltasCuda->weight5_6, deltasCuda->bias5_6, LAYER5, OUTPUT);
+	CUDAMEMCPY_CHECK(deltasCuda->weight5_6, deltas->weight5_6, sizeof(deltas->weight5_6), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(deltasCuda->bias5_6, deltas->bias5_6, sizeof(deltas->bias5_6), cudaMemcpyDeviceToHost);
 
 	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
 	CUDAMEMCPY_CHECK(features->layer4, featuresCuda->layer4, sizeof(features->layer4), cudaMemcpyHostToDevice);
