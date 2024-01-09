@@ -27,6 +27,8 @@ SOFTWARE.
 // Sai: In LeNet, a 5x5 convolution kernel (or mask) is used
 #define LENGTH_KERNEL	5
 
+#define LENGTH_KERNEL_TILE 16
+
 #define LENGTH_FEATURE0	32 // Layer 0's input image dimension: 32 x 32
 #define LENGTH_FEATURE1	(LENGTH_FEATURE0 - LENGTH_KERNEL + 1) // Layer 1's image dimension: 28 x 28
 #define LENGTH_FEATURE2	(LENGTH_FEATURE1 >> 1) // Layer 2's image dimension: 14 x 14
@@ -104,7 +106,7 @@ void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNe
 
 void Train(LeNet5 *lenet, image input, uint8 label);
 
-uint8 Predict(LeNet5 *lenet, image input, uint8 count);
+uint8 Predict(LeNet5 *lenet, image input, uint8 count, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda);
 
 void Initial(LeNet5 *lenet);
 
