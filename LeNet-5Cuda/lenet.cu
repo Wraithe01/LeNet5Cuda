@@ -453,7 +453,6 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	
 	CUDAMEMCPY_CHECK(featuresCuda->layer5, features->layer5, sizeof(features->layer5), cudaMemcpyDeviceToHost);
 	DOT_PRODUCT_FORWARD(features->layer5, features->output, lenet->weight5_6, lenet->bias5_6, action);
-	CUDAMEMCPY_CHECK(features->output, featuresCuda->output, sizeof(features->output), cudaMemcpyHostToDevice);
 }
 
 static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double), LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
@@ -534,37 +533,11 @@ static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label,
 	}
 }
 
-__global__ void softmaxKernel(const double const* input, double* output, const int label)
-{
-
-	__shared__ double inner;
-	if (threadIdx.x == 0)
-		inner = 0;
-	double loss = 0;
-
-	double x = input[threadIdx.x];
-
-	double res = 0;
-	for (int j = 0; j < blockDim.x; ++j)
-	{
-		res += exp(input[j] - x);
-	}
-	loss = 1. / res;
-	atomicAdd_block(&inner, -loss*loss);
-	__syncthreads();
-	if (threadIdx.x == label)
-	{
-		inner += loss;
-	}
-	__syncthreads();
-	loss *= (threadIdx.x == label) - loss - inner;
-
-	output[threadIdx.x] = loss;
-}
-
 static void load_target(FeatureCuda *features, FeatureCuda *errors, int label)
 {
-	softmaxKernel <<<1, OUTPUT >>> (features->output, errors->output, label);
+	double *output = (double *)features->output;
+	double *error = (double *)errors->output;
+	softmax(output, error, label, GETCOUNT(features->output));
 }
 
 static uint8 get_result(Feature *features, uint8 count)
@@ -614,7 +587,7 @@ void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNe
 
 		load_input(featuresCuda, inputs[i]);
 		forward(lenet, &features, relu, lenetCuda, featuresCuda); // Forward propagation
-		load_target(featuresCuda, errorsCuda, labels[i]);
+		load_target(&features, &errors, labels[i]);
 
 		backward(lenet, &deltas, &errors, &features, relugrad, lenetCuda, deltasCuda, featuresCuda, errorsCuda); // Backpropagation
 		FOREACH(j, GETCOUNT(LeNet5))
