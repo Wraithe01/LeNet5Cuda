@@ -139,7 +139,7 @@ SOFTWARE.
 		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
 			((double *)output)[y] += ((double *)input)[x] * weight[x][y];	\
 	FOREACH(j, GETLENGTH(bias))												\
-		((double *)output)[j] = action(((double *)output)[j] + bias[j]);	\
+		{((double *)output)[j] = action(((double *)output)[j] + bias[j]); printf("%f\n", output[j]);}	\
 }
 
 #define DOT_PRODUCT_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)	\
