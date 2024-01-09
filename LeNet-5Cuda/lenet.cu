@@ -582,6 +582,16 @@ static void forward(LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
 	ConvolutionForward(featuresCuda->layer4, featuresCuda->layer5, lenetCuda->weight4_5, lenetCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	DotProductForward(featuresCuda->layer5, featuresCuda->output, lenetCuda->weight5_6, LAYER5, OUTPUT, lenetCuda->bias5_6);
+
+	//double o[OUTPUT];
+	//CUDAMEMCPY_CHECK(featuresCuda->output, o, sizeof(o), cudaMemcpyDeviceToHost);
+	//printf("\n");
+	//for (int i = 0; i < OUTPUT; i++)
+	//{
+	//	printf("%f ", o[i]);
+	//}
+	//printf("\n");
+	//system("pause");
 }
 
 static void backward(LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
@@ -590,6 +600,17 @@ static void backward(LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda*
 	ConvolutionBackward(featuresCuda->layer4, errorsCuda->layer4, errorsCuda->layer5, lenetCuda->weight4_5, deltasCuda->weight4_5, deltasCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	SubsampBackward(featuresCuda->layer3, errorsCuda->layer3, errorsCuda->layer4, LENGTH_FEATURE3, LAYER3, LENGTH_FEATURE4);
+	double o[LAYER3][LENGTH_FEATURE3][LENGTH_FEATURE3];
+	CUDAMEMCPY_CHECK(errorsCuda->layer3, o, sizeof(o), cudaMemcpyDeviceToHost);
+	printf("\n");
+	for (int i = 0; i < LENGTH_FEATURE3; i++)
+	{
+		for (int j = 0; j < LENGTH_FEATURE3; j++)
+			printf("%f ", o[i]);
+		printf("\n");
+	}
+	printf("\n");
+	system("pause");
 	ConvolutionBackward(featuresCuda->layer2, errorsCuda->layer2, errorsCuda->layer3, lenetCuda->weight2_3, deltasCuda->weight2_3, deltasCuda->bias2_3,
 					LAYER2, LAYER3, LENGTH_FEATURE2, LENGTH_FEATURE2);
 	SubsampBackward(featuresCuda->layer1, errorsCuda->layer1, errorsCuda->layer2, LENGTH_FEATURE1, LAYER1, LENGTH_FEATURE2);
