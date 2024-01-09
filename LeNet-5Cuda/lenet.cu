@@ -476,8 +476,8 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	ConvolutionForward(featuresCuda->layer4, featuresCuda->layer5, lenetCuda->weight4_5, lenetCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	
-	CUDAMEMCPY_CHECK(featuresCuda->layer5, features->layer5, sizeof(features->layer5), cudaMemcpyDeviceToHost);
-	DOT_PRODUCT_FORWARD(features->layer5, features->output, lenet->weight5_6, lenet->bias5_6, action);
+	DotProductForward(featuresCuda->layer5, featuresCuda->output, lenetCuda->weight5_6, LAYER5, OUTPUT, lenetCuda->bias5_6);
+	CUDAMEMCPY_CHECK(featuresCuda->output, features->output, sizeof(features->output), cudaMemcpyDeviceToHost);
 }
 
 static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double), LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
