@@ -562,8 +562,25 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	CUDAMEMCPY_CHECK(features->input, featuresCuda->input, sizeof(features->input), cudaMemcpyHostToDevice);
 	ConvolutionForward(featuresCuda->input, featuresCuda->layer1, lenetCuda->weight0_1, lenetCuda->bias0_1,
 					   INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
+	
+	CUDAMEMCPY_CHECK(featuresCuda->layer1, features->layer1, sizeof(features->layer1), cudaMemcpyDeviceToHost);
+	SUBSAMP_MAX_FORWARD(features->layer1, features->layer2);
+	printf("\nCPU:\n");
+	for (uint32_t i = 0; i < LAYER2; ++i)
+		for (uint32_t j = 0; j < LENGTH_FEATURE2; ++j)
+			for (uint32_t k = 0; k < LENGTH_FEATURE2; ++k)
+				printf("%f ", features->layer2[i][j][k]);
+	printf("\n");
 
 	SubsampForward(featuresCuda->layer1, featuresCuda->layer2, LAYER1, LENGTH_FEATURE1, LAYER2, LENGTH_FEATURE2);
+	CUDAMEMCPY_CHECK(featuresCuda->layer2, features->layer2, sizeof(features->layer2), cudaMemcpyDeviceToHost);
+	printf("\nGPU:\n");
+	for (uint32_t i = 0; i < LAYER2; ++i)
+		for (uint32_t j = 0; j < LENGTH_FEATURE2; ++j)
+			for (uint32_t k = 0; k < LENGTH_FEATURE2; ++k)
+				printf("%f ", features->layer2[i][j][k]);
+	printf("\n");
+	system("pause");
 
 	CUDAMEMCPY_CHECK(features->layer2, featuresCuda->layer2, sizeof(features->layer2), cudaMemcpyHostToDevice);
 	ConvolutionForward(featuresCuda->layer2, featuresCuda->layer3, lenetCuda->weight2_3, lenetCuda->bias2_3,
