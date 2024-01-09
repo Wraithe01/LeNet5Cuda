@@ -465,7 +465,7 @@ __global__ void CUDA_DotBinerror(const double const* input, double* inerror, con
 		inerror[x] = acc * input[x] > 0;
 	}
 	if (x < w2size)
-		bd[x] += outerror[x];
+		bd[x] = outerror[x];
 }
 __global__ void CUDA_DotBias(const double const* input, const double const* outerror, double* wd, const size_t w1size, const size_t w2size)
 {
@@ -473,7 +473,7 @@ __global__ void CUDA_DotBias(const double const* input, const double const* oute
 	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
 	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
 	if (x < w1size && y < w2size)
-		wd[y + x * w2size] += input[x] * outerror[y];
+		wd[y + x * w2size] = input[x] * outerror[y];
 }
 void DotProductBackward(double* input, double* inerror, double* outerror, double* weight, double* wd, double* bd, const size_t w1size, const size_t w2size)
 {
