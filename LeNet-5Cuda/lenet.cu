@@ -292,6 +292,39 @@ __global__ void BiasUpdate(double* bias, double* error, const int features, cons
 	}
 }
 
+__global__ void WeightConvoluteKernel(double* input, double* weight, double* output)
+{
+	double acc = 0;
+
+	extern __shared__ double data[];
+
+	data[threadIdx.y * blockDim.x + threadIdx.x] = input[blockIdx.x * blockDim.y * blockDim.x +
+														 threadIdx.y * blockDim.x +
+														 threadIdx.x];
+	if ((threadIdx.y < blockDim.y - LENGTH_KERNEL + 1) && (threadIdx.x < blockDim.x - LENGTH_KERNEL + 1))
+	{
+		data[blockDim.y * blockDim.x + threadIdx.y * (blockDim.x - LENGTH_KERNEL + 1) + threadIdx.x] = output[blockIdx.y * (blockDim.y - LENGTH_KERNEL + 1) * (blockDim.x - LENGTH_KERNEL + 1) +
+																											  threadIdx.y * (blockDim.x - LENGTH_KERNEL + 1) +
+																											  threadIdx.x];
+	}
+	__syncthreads();
+
+	if ((threadIdx.y < LENGTH_KERNEL) && (threadIdx.x < LENGTH_KERNEL))
+	{
+		for (int p = 0; p < blockDim.y - LENGTH_KERNEL + 1; p++)
+		{
+			for (int q = 0; q < blockDim.x - LENGTH_KERNEL + 1; q++)
+			{
+				acc += data[(threadIdx.y + p) * blockDim.x + (threadIdx.x + q)] * data[blockDim.y * blockDim.x + p * (blockDim.x - LENGTH_KERNEL + 1) + q];
+			}
+		}
+		weight[blockIdx.x * gridDim.y * LENGTH_KERNEL * LENGTH_KERNEL +
+			   blockIdx.y * LENGTH_KERNEL * LENGTH_KERNEL +
+		       threadIdx.y * LENGTH_KERNEL +
+			   threadIdx.x] = acc;
+	}
+}
+
 void ConvolutionBackward(double* input, double* inError, double* outError, double* weight, double* weightDeltas, double* biasDeltas,
 	const int inputFeatures, const int outputFeatures, const int inputWidth, const int inputHeight)
 {
@@ -305,12 +338,16 @@ void ConvolutionBackward(double* input, double* inError, double* outError, doubl
 	BackwardRelugrad <<< ceil(((float)(inputFeatures * inputWidth * inputHeight)) / ((float)(LENGTH_KERNEL_TILE * LENGTH_KERNEL_TILE))),
 						LENGTH_KERNEL_TILE* LENGTH_KERNEL_TILE >>> (input, inError, inputFeatures * inputWidth * inputHeight);
 	BiasUpdate <<< 1, outputFeatures >>> (biasDeltas, outError, outputFeatures, (inputWidth - LENGTH_KERNEL + 1) * (inputHeight - LENGTH_KERNEL + 1));
+	
+	block = dim3(inputWidth, inputHeight, 1);
+	grid = dim3(inputFeatures, outputFeatures, 1);
+	WeightConvoluteKernel <<< grid, block, inputWidth * inputHeight + (inputWidth - LENGTH_KERNEL + 1) * (inputHeight - LENGTH_KERNEL + 1) >>> (input, weightDeltas, outError);
 
 	LeNet5 test = { 0 };
 	CUDAMEMCPY_CHECK(weightDeltas, test.weight4_5, sizeof(test.weight4_5), cudaMemcpyDeviceToHost);
 
-	for (int k = 0; k < LAYER4; k++)
-		for (int l = 0; l < LAYER5; l++)
+	for (int k = 0; k < 1; k++)
+		for (int l = 0; l < 10; l++)
 	{
 		printf("\n");
 		for (int i = 0; i < LENGTH_KERNEL; i++)
@@ -344,21 +381,17 @@ void ConvolutionBackward(double* input, double* inError, double* outError, doubl
 	FOREACH(j, GETLENGTH(outerror))											\
 		FOREACH(i, GETCOUNT(outerror[j]))									\
 		bd[j] += ((double *)outerror[j])[i];								\
-printf("\n");															\
-FOREACH(i1,GETLENGTH(bd))								\
-			printf("%f ", bd[i1]);							\
-		printf("\n");														\
-system("pause");														\
 	for (int x = 0; x < GETLENGTH(weight); ++x)								\
 		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
 			CONVOLUTE_VALID(input[x], wd[x][y], outerror[y]);				\
-FOREACH(k,GETLENGTH(inerror))										\
+FOREACH(k,1)										\
+	FOREACH(l,10)\
 	{\
 	printf("\n");															\
-	FOREACH(i0,GETLENGTH(inerror[k]))										\
+	FOREACH(i0,GETLENGTH(wd[k][l]))										\
 	{																		\
-		FOREACH(i1,GETLENGTH(*(inerror[k])))								\
-			printf("%f ", inerror[k][i0][i1]);							\
+		FOREACH(i1,GETLENGTH(*(wd[k][l])))								\
+			printf("%f ", wd[k][l][i0][i1]);							\
 		printf("\n");														\
 	}																		\
 	}\
