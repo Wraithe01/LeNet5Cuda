@@ -147,7 +147,7 @@ int FeatureCudaFree(FeatureCuda* feature)
 					(output)[i0 + w0][i1 + w1] += (input)[i0][i1] * (weight)[w0][w1];	\
 }
 
-__global__ void ForwardConvoluteKernel(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH)
+__global__ void ForwardConvoluteKernel(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH, double* bias)
 {
 	int outFeature = blockIdx.z;
 	int outputFeatures = gridDim.z;
@@ -164,17 +164,18 @@ __global__ void ForwardConvoluteKernel(double* input, double* output, double* we
 		if ((threadW < inputW) && (threadH < inputH))
 		{
 			inTile[threadIdx.y][threadIdx.x] = input[inFeature * inputH * inputW +
-				threadH * inputW +
-				threadW];
+													 threadH * inputW +
+													 threadW];
 		}
 		if ((threadIdx.x < LENGTH_KERNEL) && (threadIdx.y < LENGTH_KERNEL))
 		{
-			weightFilter[threadIdx.y][threadIdx.x] = weight[inFeature * gridDim.z * LENGTH_KERNEL * LENGTH_KERNEL +
-				outFeature * LENGTH_KERNEL * LENGTH_KERNEL +
-				threadIdx.y * LENGTH_KERNEL +
-				threadIdx.x];
+			weightFilter[threadIdx.y][threadIdx.x] = weight[inFeature * outputFeatures * LENGTH_KERNEL * LENGTH_KERNEL +
+															outFeature * LENGTH_KERNEL * LENGTH_KERNEL +
+															threadIdx.y * LENGTH_KERNEL +
+															threadIdx.x];
 		}
 		__syncthreads();
+
 		if ((threadIdx.x < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) && (threadIdx.y < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) &&
 			(threadH < (inputH - LENGTH_KERNEL + 1)) && (threadW < (inputW - LENGTH_KERNEL + 1)))
 		{
@@ -186,11 +187,13 @@ __global__ void ForwardConvoluteKernel(double* input, double* output, double* we
 				}
 			}
 		}
+		__syncthreads();
 	}
 
 	if ((threadIdx.x < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) && (threadIdx.y < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) &&
 		(threadH < (inputH - LENGTH_KERNEL + 1)) && (threadW < (inputW - LENGTH_KERNEL + 1)))
 	{
+		acc += bias[outFeature];
 		output[outFeature * (inputH - LENGTH_KERNEL + 1) * (inputW - LENGTH_KERNEL + 1) + threadH * (inputW - LENGTH_KERNEL + 1) + threadW] = acc * (acc > 0);
 	}
 }
@@ -203,7 +206,132 @@ void ConvolutionForward(double* input, double* output, double* weight, double* b
 	unsigned int tilesW = ceil((float)(inputWidth - LENGTH_KERNEL + 1) / (float)(LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1));
 	unsigned int tilesH = ceil((float)(inputHeight - LENGTH_KERNEL + 1) / (float)(LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1));
 	dim3 grid(tilesW, tilesH, outputFeatures);
-	ForwardConvoluteKernel << < grid, block >> > (input, output, weight, inputFeatures, inputWidth, inputHeight);
+	ForwardConvoluteKernel <<< grid, block >>> (input, output, weight, inputFeatures, inputWidth, inputHeight, bias);
+}
+
+__global__ void ReverseConvoluteKernel(double* input, double* output, double* weight, const int inputFeatures, const int inputW, const int inputH)
+{
+	int outFeature = blockIdx.z;
+	int outputFeatures = gridDim.z;
+	int threadW = blockIdx.x * (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1) + threadIdx.x;
+	int threadH = blockIdx.y * (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1) + threadIdx.y;
+
+	int readX = threadW - LENGTH_KERNEL + 1;
+	int readY = threadH - LENGTH_KERNEL + 1;
+
+	double acc = 0;
+
+	__shared__ double inTile[LENGTH_KERNEL_TILE][LENGTH_KERNEL_TILE];
+	__shared__ double weightFilter[LENGTH_KERNEL][LENGTH_KERNEL];
+
+	for (int inFeature = 0; inFeature < inputFeatures; inFeature++)
+	{
+		if ((readX < inputW) && (readY < inputH))
+		{
+			if ((readX >= 0) && (readY >= 0))
+			{
+				inTile[threadIdx.y][threadIdx.x] = input[inFeature * inputH * inputW +
+														 readY * inputW +
+														 readX];
+			}
+			else
+			{
+				inTile[threadIdx.y][threadIdx.x] = 0;
+			}
+		}
+		if ((threadIdx.x < LENGTH_KERNEL) && (threadIdx.y < LENGTH_KERNEL))
+		{
+			weightFilter[LENGTH_KERNEL - 1 - threadIdx.y][LENGTH_KERNEL - 1 - threadIdx.x] = weight[outFeature * inputFeatures * LENGTH_KERNEL * LENGTH_KERNEL +
+																									inFeature * LENGTH_KERNEL * LENGTH_KERNEL +
+																									threadIdx.y * LENGTH_KERNEL +
+																									threadIdx.x];
+		}
+		__syncthreads();
+		if ((threadIdx.x < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) && (threadIdx.y < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) &&
+			(threadH < (inputH + LENGTH_KERNEL - 1)) && (threadW < (inputW + LENGTH_KERNEL - 1)))
+		{
+			for (int p = 0; p < LENGTH_KERNEL; p++)
+			{
+				for (int q = 0; q < LENGTH_KERNEL; q++)
+				{
+					if (((threadH + p) < (inputH + LENGTH_KERNEL - 1)) && ((threadW + q) < (inputW + LENGTH_KERNEL - 1)))
+						acc += inTile[threadIdx.y + p][threadIdx.x + q] * weightFilter[p][q];
+				}
+			}
+		}
+		__syncthreads();
+	}
+
+	if ((threadIdx.x < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) && (threadIdx.y < (LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1)) &&
+		(threadH < (inputH + LENGTH_KERNEL - 1)) && (threadW < (inputW + LENGTH_KERNEL - 1)))
+	{
+		output[outFeature * (inputH + LENGTH_KERNEL - 1) * (inputW + LENGTH_KERNEL - 1) + threadH * (inputW + LENGTH_KERNEL - 1) + threadW] = acc;
+	}
+}
+
+__global__ void BackwardRelugrad(double* input, double* error, const int size)
+{
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (i < size)
+	{
+		error[i] *= input[i] > 0;
+	}
+}
+
+__global__ void BiasUpdate(double* bias, double* error, const int features, const int size)
+{
+	double acc = 0;
+	if (threadIdx.x < features)
+	{
+		for (int i = 0; i < size; i++)
+		{
+			acc += error[threadIdx.x * size + i];
+		}
+		bias[threadIdx.x] = acc;
+	}
+}
+
+void ConvolutionBackward(double* input, double* inError, double* outError, double* weight, double* weightDeltas, double* biasDeltas,
+	const int inputFeatures, const int outputFeatures, const int inputWidth, const int inputHeight)
+{
+	/*Blocks are fixed sized tiles to allow for any size of input*/
+	dim3 block(LENGTH_KERNEL_TILE, LENGTH_KERNEL_TILE, 1);
+	unsigned int tilesW = ceil((float)(inputWidth) / (float)(LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1));
+	unsigned int tilesH = ceil((float)(inputHeight) / (float)(LENGTH_KERNEL_TILE - LENGTH_KERNEL + 1));
+	dim3 grid(tilesW, tilesH, inputFeatures);
+	ReverseConvoluteKernel <<< grid, block >>> (outError, inError, weight, outputFeatures, inputWidth - LENGTH_KERNEL + 1, inputHeight - LENGTH_KERNEL + 1);
+
+	BackwardRelugrad <<< ceil(((float)(inputFeatures * inputWidth * inputHeight)) / ((float)(LENGTH_KERNEL_TILE * LENGTH_KERNEL_TILE))),
+						LENGTH_KERNEL_TILE* LENGTH_KERNEL_TILE >>> (input, inError, inputFeatures * inputWidth * inputHeight);
+	BiasUpdate <<< 1, outputFeatures >>> (biasDeltas, outError, outputFeatures, (inputWidth - LENGTH_KERNEL + 1) * (inputHeight - LENGTH_KERNEL + 1));
+
+	LeNet5 test = { 0 };
+	CUDAMEMCPY_CHECK(weightDeltas, test.weight4_5, sizeof(test.weight4_5), cudaMemcpyDeviceToHost);
+
+	for (int k = 0; k < LAYER4; k++)
+		for (int l = 0; l < LAYER5; l++)
+	{
+		printf("\n");
+		for (int i = 0; i < LENGTH_KERNEL; i++)
+		{
+			for (int j = 0; j < LENGTH_KERNEL; j++)
+			{
+				printf("%f ", test.weight4_5[k][l][i][j]);
+			}
+			printf("\n");
+		}
+	}
+	system("pause");
+}
+
+#define CONVOLUTE_FULL(input,output,weight)												\
+{																						\
+	FOREACH(i0,GETLENGTH(input))														\
+		FOREACH(i1,GETLENGTH(*(input)))													\
+			FOREACH(w0,GETLENGTH(weight))												\
+				FOREACH(w1,GETLENGTH(*(weight)))										\
+					(output)[i0 + w0][i1 + w1] += (input)[i0][i1] * (weight)[w0][w1];	\
 }
 
 #define CONVOLUTION_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)\
@@ -216,9 +344,25 @@ void ConvolutionForward(double* input, double* output, double* weight, double* b
 	FOREACH(j, GETLENGTH(outerror))											\
 		FOREACH(i, GETCOUNT(outerror[j]))									\
 		bd[j] += ((double *)outerror[j])[i];								\
+printf("\n");															\
+FOREACH(i1,GETLENGTH(bd))								\
+			printf("%f ", bd[i1]);							\
+		printf("\n");														\
+system("pause");														\
 	for (int x = 0; x < GETLENGTH(weight); ++x)								\
 		for (int y = 0; y < GETLENGTH(*weight); ++y)						\
 			CONVOLUTE_VALID(input[x], wd[x][y], outerror[y]);				\
+FOREACH(k,GETLENGTH(inerror))										\
+	{\
+	printf("\n");															\
+	FOREACH(i0,GETLENGTH(inerror[k]))										\
+	{																		\
+		FOREACH(i1,GETLENGTH(*(inerror[k])))								\
+			printf("%f ", inerror[k][i0][i1]);							\
+		printf("\n");														\
+	}																		\
+	}\
+	system("pause");														\
 }
 
 // Similar functionality as the code in Figure 16.5 of the textbook
@@ -328,14 +472,29 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double), L
 	DOT_PRODUCT_FORWARD(features->layer5, features->output, lenet->weight5_6, lenet->bias5_6, action);
 }
 
-static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double))
+static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double), LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
 	DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
+
+	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(deltas->weight4_5, deltasCuda->weight4_5, sizeof(deltas->weight4_5), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(deltas->bias4_5, deltasCuda->bias4_5, sizeof(deltas->bias4_5), cudaMemcpyHostToDevice);
+
+	CUDAMEMCPY_CHECK(features->layer4, featuresCuda->layer4, sizeof(features->layer4), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(errors->layer4, errorsCuda->layer4, sizeof(errors->layer4), cudaMemcpyHostToDevice);
+	CUDAMEMCPY_CHECK(errors->layer5, errorsCuda->layer5, sizeof(errors->layer5), cudaMemcpyHostToDevice);
+
 	CONVOLUTION_BACKWARD(features->layer4, errors->layer4, errors->layer5, lenet->weight4_5, deltas->weight4_5, deltas->bias4_5, actiongrad);
+	ConvolutionBackward(featuresCuda->layer4, errorsCuda->layer4, errorsCuda->layer5, lenetCuda->weight4_5, deltasCuda->weight4_5, deltasCuda->bias4_5,
+						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	SUBSAMP_MAX_BACKWARD(features->layer3, errors->layer3, errors->layer4);
-	CONVOLUTION_BACKWARD(features->layer2, errors->layer2, errors->layer3, lenet->weight2_3, deltas->weight2_3, deltas->bias2_3, actiongrad);
+	
+	ConvolutionBackward(featuresCuda->layer2, errorsCuda->layer2, errorsCuda->layer3, lenetCuda->weight2_3, deltasCuda->weight2_3, deltasCuda->bias2_3,
+					LAYER2, LAYER3, LENGTH_FEATURE2, LENGTH_FEATURE2);
 	SUBSAMP_MAX_BACKWARD(features->layer1, errors->layer1, errors->layer2);
-	CONVOLUTION_BACKWARD(features->input, errors->input, errors->layer1, lenet->weight0_1, deltas->weight0_1, deltas->bias0_1, actiongrad);
+	
+	ConvolutionBackward(featuresCuda->input, errorsCuda->input, errorsCuda->layer1, lenetCuda->weight0_1, deltasCuda->weight0_1, deltasCuda->bias0_1,
+					INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
 }
 
 static inline void load_input(Feature *features, image input)
@@ -433,26 +592,8 @@ void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNe
 		load_input(&features, inputs[i]);
 		forward(lenet, &features, relu, lenetCuda, featuresCuda); // Forward propagation
 		load_target(&features, &errors, labels[i]);
-		/*
-		CUDAMEMCPY_CHECK(deltas.weight0_1, deltasCuda->weight0_1, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.weight2_3, deltasCuda->weight2_3, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.weight4_5, deltasCuda->weight4_5, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.weight5_6, deltasCuda->weight5_6, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.bias0_1, deltasCuda->bias0_1, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.bias2_3, deltasCuda->bias2_3, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.bias4_5, deltasCuda->bias4_5, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(deltas.bias5_6, deltasCuda->bias5_6, cudaMemcpyHostToDevice);
 
-		CUDAMEMCPY_CHECK(errors.input, errorsCuda->input, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(errors.layer1, errorsCuda->layer1, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(errors.layer2, errorsCuda->layer2, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(errors.layer3, errorsCuda->layer3, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(errors.layer4, errorsCuda->layer4, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(errors.layer5, errorsCuda->layer5, cudaMemcpyHostToDevice);
-		CUDAMEMCPY_CHECK(errors.output, errorsCuda->output, cudaMemcpyHostToDevice);
-		*/
-
-		backward(lenet, &deltas, &errors, &features, relugrad); // Backpropagation
+		backward(lenet, &deltas, &errors, &features, relugrad, lenetCuda, deltasCuda, featuresCuda, errorsCuda); // Backpropagation
 		FOREACH(j, GETCOUNT(LeNet5))
 				buffer[j] += ((double *)&deltas)[j];
 	}
