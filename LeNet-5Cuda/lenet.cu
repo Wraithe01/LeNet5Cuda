@@ -667,10 +667,7 @@ void UpdateModel(LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, const double k)
 
 void TrainBatch(image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
-	double buffer[GETCOUNT(LeNet5)] = { 0 };
-	int i = 0;
-
-	for (i = 0; i < batchSize; ++i)
+	for (int i = 0; i < batchSize; ++i)
 	{ // For each training image
 		load_input(featuresCuda, inputs[i]);
 		forward(lenetCuda, featuresCuda); // Forward propagation
