@@ -244,8 +244,7 @@ static double f64rand()
 	static int randbit = 0;
 	if (!randbit)
 	{
-		//srand((unsigned)time(0));
-		srand(0);
+		srand((unsigned)time(0));
 		for (int i = RAND_MAX; i; i >>= 1, ++randbit);
 	}
 	unsigned long long lvalue = 0x4000000000000000L;
