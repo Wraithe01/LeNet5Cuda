@@ -426,7 +426,8 @@ __global__ void CUDA_SubsampBackward(const double const* input, double* inerror,
 		{
 			for (int32_t l1 = 0; l1 < len; ++l1)
 			{
-				ismax = input[(i)*lenFeatIn * lenFeatIn + (o0 * len + l0) * lenFeatIn + (o1 * len + l1)] >
+				const uint32_t inputIndex = (i)*lenFeatIn * lenFeatIn + (o0 * len + l0) * lenFeatIn + (o1 * len + l1);
+				ismax = input[inputIndex] >
 					input[(i)*lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)];
 				x0 += ismax * (l0 - x0);
 				x1 += ismax * (l1 - x1);
@@ -658,8 +659,6 @@ void TrainBatch(image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCu
 
 	for (i = 0; i < batchSize; ++i)
 	{ // For each training image
-		cudaMemset(errorsCuda->layer3, 0, LAYER3 * LENGTH_FEATURE3 * LENGTH_FEATURE3 * sizeof(double));
-
 		load_input(featuresCuda, inputs[i]);
 		forward(lenetCuda, featuresCuda); // Forward propagation
 		load_target(featuresCuda, errorsCuda, labels[i]);
