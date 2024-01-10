@@ -584,13 +584,41 @@ static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label,
 	}
 }
 
+__global__ void SoftmaxKernel(double* in, double* out, const int label)
+{
+	__shared__ double input[OUTPUT];
+	__shared__ double loss[OUTPUT];
+	//10 threads will read the input
+	input[threadIdx.x] = in[threadIdx.x];
+
+	//one thread performs the work, tricky to parallelize
+	if (threadIdx.x == 0)
+	{
+		double inner = 0;
+		for (int i = 0; i < OUTPUT; ++i)
+		{
+			double res = 0;
+			for (int j = 0; j < OUTPUT; ++j)
+			{
+				res += exp(input[j] - input[i]);
+			}
+			loss[i] = 1. / res;
+			inner -= loss[i] * loss[i];
+		}
+		inner += loss[label];
+		for (int i = 0; i < OUTPUT; ++i)
+		{
+			loss[i] *= (i == label) - loss[i] - inner;
+		}
+	}
+
+	//10 threads will write to output
+	out[threadIdx.x] = loss[threadIdx.x];
+}
+
 static void load_target(FeatureCuda *features, FeatureCuda *errors, int label)
 {
-	double output[OUTPUT];
-	double error[OUTPUT] = { 0 };
-	CUDAMEMCPY_CHECK(features->output, output, OUTPUT * sizeof(double), cudaMemcpyDeviceToHost);
-	softmax(output, error, label, OUTPUT);
-	CUDAMEMCPY_CHECK(error, errors->output, OUTPUT * sizeof(double), cudaMemcpyHostToDevice);
+	SoftmaxKernel <<< 1, OUTPUT >>> (features->output, errors->output, label);
 }
 
 static uint8 get_result(FeatureCuda *features, uint8 count)
