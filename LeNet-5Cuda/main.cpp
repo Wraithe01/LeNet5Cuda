@@ -50,29 +50,30 @@ int read_data(unsigned char(*data)[28][28], unsigned char label[], const int cou
 	return 0;
 }
 
-void training(LeNet5 *lenet, image *train_data, uint8 *train_label, int batch_size, int total_size, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
+void training(image *train_data, uint8 *train_label, int batch_size, int total_size, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
 	printf("Total images in training set: %d\n", total_size);
 	printf("Batchsize: %d\n", batch_size);
-
+	LenetCudaZero(deltasCuda);
 	for (int i = 0, percent = 0; i <= total_size - batch_size; i += batch_size)
 	{
 		printf("\nTraining on images: %d-%d\t", i, i + batch_size);
-		TrainBatch(lenet, train_data + i, train_label + i, batch_size, lenetCuda, deltasCuda, featuresCuda, errorsCuda);
+		TrainBatch(train_data + i, train_label + i, batch_size, lenetCuda, deltasCuda, featuresCuda, errorsCuda);
 		if (i * 100 / total_size > percent)
 			printf("Training %2d%% complete", percent = i * 100 / total_size);
 	}
 	printf("\n");
 }
 
-int testing(LeNet5 *lenet, image *test_data, uint8 *test_label, int total_size, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
+int testing(image *test_data, uint8 *test_label, int total_size, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
 {
+	
 	int confusion_matrix[10][10] = { 0 }; // For our specific problem, we have a 10x10 confusion matrix 
 	int right = 0, percent = 0;
 	for (int i = 0; i < total_size; ++i)
 	{
 		uint8 l = test_label[i];
-		int p = Predict(lenet, test_data[i], 10, lenetCuda, featuresCuda);
+		int p = Predict(test_data[i], 10, lenetCuda, featuresCuda);
 		confusion_matrix[l][p] += 1;
 		right += (l == p) ? 1 : 0; // If the prediction is correct, increment our counter
 		//if (i * 100 / total_size > percent)
@@ -165,26 +166,28 @@ int main()
 	// Different values of batch size can significantly affect the training and test accuracies
 	int batches[] = { 300 };
 	// We are using only one epoch, even though multiple epochs have their benefits.
+	LenetCudaUpload(lenet, lenetCuda);
 	for (int i = 0; i < sizeof(batches) / sizeof(*batches); ++i)
 	{
-		training(lenet, train_data, train_label, batches[i], COUNT_TRAIN, lenetCuda, deltas, features, errors);
+		training(train_data, train_label, batches[i], COUNT_TRAIN, lenetCuda, deltas, features, errors);
 	}
-	printf("Training time taken: %u sec\n", (unsigned)(clock() - start) / CLOCKS_PER_SEC);
+	LenetCudaDownload(lenet, lenetCuda);
+	printf("Training time taken: %.2f sec\n", ((float)(clock() - start)) / ((float)CLOCKS_PER_SEC));
 
 	// printf("Calculating training accuracy...\n");
 	// int training_right = testing(lenet, train_data, train_label, COUNT_TRAIN);
 	// printf("Training accuracy: %f%%\n", training_right * 100.0 / COUNT_TRAIN);
 
 	start = clock();
-
+	LenetCudaUpload(lenet, lenetCuda);
 	printf("Calculating test accuracy...\n");
-	int right = testing(lenet, test_data, test_label, COUNT_TEST, lenetCuda, features);
+	int right = testing(test_data, test_label, COUNT_TEST, lenetCuda, features);
 	printf("Testing: Correct predictions = %d (%.2f%%)\n", right, right/100.0);
 	int wrong = COUNT_TEST - right;
 	printf("Testing: Wrong predictions = %d (%.2f%%)\n", wrong, wrong/100.0);
 	//----------------------------------------------------------------------------------------
 
-	printf("Testing time taken: %u sec\n", (unsigned)(clock() - start)/CLOCKS_PER_SEC);
+	printf("Testing time taken: %.2f sec\n", ((float)(clock() - start)) / ((float)CLOCKS_PER_SEC));
 	//save(lenet, LENET_FILE);
 	LeNetCudaFree(lenetCuda);
 	LeNetCudaFree(deltas);

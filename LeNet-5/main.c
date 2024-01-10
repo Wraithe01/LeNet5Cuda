@@ -140,7 +140,7 @@ int main()
 	{
 		training(lenet, train_data, train_label, batches[i], COUNT_TRAIN);
 	}
-	printf("Training time taken: %u sec\n", (unsigned)(clock() - start) / CLOCKS_PER_SEC);
+	printf("Training time taken: %.2f sec\n", ((float)(clock() - start)) / ((float)CLOCKS_PER_SEC));
 
 	// printf("Calculating training accuracy...\n");
 	// int training_right = testing(lenet, train_data, train_label, COUNT_TRAIN);
@@ -155,7 +155,7 @@ int main()
 	printf("Testing: Wrong predictions = %d (%.2f%%)\n", wrong, wrong/100.0);
 	//----------------------------------------------------------------------------------------
 
-	printf("Testing time taken: %u sec\n", (unsigned)(clock() - start) / CLOCKS_PER_SEC);
+	printf("Testing time taken: %.2f sec\n", ((float)(clock() - start)) / ((float)CLOCKS_PER_SEC));
 	//save(lenet, LENET_FILE);
 	free(lenet);
 	free(train_data);
