@@ -564,26 +564,6 @@ static inline void load_input(FeatureCuda *features, image input)
 	CUDAMEMCPY_CHECK(layer0, features->input, LENGTH_FEATURE0 * LENGTH_FEATURE0 * sizeof(double), cudaMemcpyHostToDevice);
 }
 
-static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label, int count)
-{
-	double inner = 0;
-	for (int i = 0; i < count; ++i)
-	{
-		double res = 0;
-		for (int j = 0; j < count; ++j)
-		{
-			res += exp(input[j] - input[i]);
-		}
-		loss[i] = 1. / res;
-		inner -= loss[i] * loss[i];
-	}
-	inner += loss[label];
-	for (int i = 0; i < count; ++i)
-	{
-		loss[i] *= (i == label) - loss[i] - inner;
-	}
-}
-
 __global__ void SoftmaxKernel(double* in, double* out, const int label)
 {
 	__shared__ double input[OUTPUT];
