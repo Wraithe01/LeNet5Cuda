@@ -369,13 +369,13 @@ void ConvolutionBackward(double* input, double* inError, double* outError, doubl
 								(input, weightDeltas, outError);
 }
 
-__global__ void CUDA_SubsampForward(const double const* input, double* output, const uint32_t len, const uint32_t lenFeatIn, const uint32_t lenFeatOut)
+__global__ void CUDA_SubsampForward(const double const* input, double* output, const uint32_t len, const uint32_t lenFeatIn, const uint32_t lenFeatOut, const uint32_t maxZ)
 {
 	const uint32_t o1 = threadIdx.x + blockIdx.x * blockDim.x;
 	const uint32_t o0 = threadIdx.y + blockIdx.y * blockDim.y;
 	const uint32_t i = threadIdx.z + blockIdx.z * blockDim.z;
 
-	if (o0 < lenFeatOut && o1 < lenFeatOut)
+	if (o0 < lenFeatOut && o1 < lenFeatOut && i < maxZ)
 	{
 		int32_t x0 = 0;
 		int32_t x1 = 0;
@@ -394,30 +394,29 @@ __global__ void CUDA_SubsampForward(const double const* input, double* output, c
 			input[(i)*lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)];
 	}
 }
-void SubsampForward(double* input, double* output, size_t insize, size_t inlayersize, size_t outsize, size_t outlayersise)
+void SubsampForward(double* input, double* output, size_t inlayersize, size_t outsize, size_t outlayersise)
 {
-	size_t inTotalSize = insize * inlayersize * inlayersize;
-	size_t outTotalSize = outsize * outlayersise * outlayersise;
-
 	uint32_t len = inlayersize / outlayersise;
 	{
-		dim3 threads = { 16, 16, 1 };
+		dim3 threads = { 16, 16, 4 };
+		if (outlayersise < 10)
+			threads = { 8, 8, 16 };
 		dim3 blocks = {
 			(uint32_t)ceil((double)outlayersise / threads.x),
 			(uint32_t)ceil((double)outlayersise / threads.y),
 			(uint32_t)ceil((double)outsize / threads.z)
 		};
-		CUDA_SubsampForward << <blocks, threads >> > (input, output, len, inlayersize, outlayersise);
+		CUDA_SubsampForward << <blocks, threads >> > (input, output, len, inlayersize, outlayersise, outsize);
 	}
 }
 
-__global__ void CUDA_SubsampBackward(const double const* input, double* inerror, double* outerror, const uint32_t len, const uint32_t lenFeatIn, const uint32_t lenFeatOut)
+__global__ void CUDA_SubsampBackward(const double const* input, double* inerror, const double const* outerror, const uint32_t len, const uint32_t lenFeatIn, const uint32_t lenFeatOut, const uint32_t maxZ)
 {
 	const uint32_t o1 = threadIdx.x + blockIdx.x * blockDim.x;
 	const uint32_t o0 = threadIdx.y + blockIdx.y * blockDim.y;
 	const uint32_t i = threadIdx.z + blockIdx.z * blockDim.z;
 
-	if (o0 < lenFeatOut && o1 < lenFeatOut)
+	if (o0 < lenFeatOut && o1 < lenFeatOut && i < maxZ)
 	{
 		int32_t x0 = 0;
 		int32_t x1 = 0;
@@ -426,12 +425,17 @@ __global__ void CUDA_SubsampBackward(const double const* input, double* inerror,
 		{
 			for (int32_t l1 = 0; l1 < len; ++l1)
 			{
-				ismax = input[(i)*lenFeatIn * lenFeatIn + (o0 * len + l0) * lenFeatIn + (o1 * len + l1)] >
+				const uint32_t inputIndex = (i)*lenFeatIn * lenFeatIn + (o0 * len + l0) * lenFeatIn + (o1 * len + l1);
+				inerror[inputIndex] = 0;
+
+				// Max pooling
+				ismax = input[inputIndex] >
 					input[(i)*lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)];
 				x0 += ismax * (l0 - x0);
 				x1 += ismax * (l1 - x1);
 			}
 		}
+		// Error propagation
 		inerror[(i)*lenFeatIn * lenFeatIn + (o0 * len + x0) * lenFeatIn + (o1 * len + x1)] =
 			outerror[(i)*lenFeatOut * lenFeatOut + (o0)*lenFeatOut + (o1)];
 	}
@@ -440,13 +444,15 @@ void SubsampBackward(double* input, double* inerror, double* outerror, size_t in
 {
 	uint32_t len = inlayersize / outlayersise;
 	{
-		dim3 threads = { 16, 16, 1 };
+		dim3 threads = { 16, 16, 4 };
+		if (outlayersise < 10)
+			threads = { 8, 8, 16 };
 		dim3 blocks = {
 			(uint32_t)ceil((double)outlayersise / threads.x),
 			(uint32_t)ceil((double)outlayersise / threads.y),
 			(uint32_t)ceil((double)outsize / threads.z)
 		};
-		CUDA_SubsampBackward << <threads, blocks >> > (input, inerror, outerror, len, inlayersize, outlayersise);
+		CUDA_SubsampBackward << <threads, blocks >> > (input, inerror, outerror, len, inlayersize, outlayersise, outsize);
 	}
 }
 
@@ -521,10 +527,10 @@ static void forward(LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
 {
 	ConvolutionForward(featuresCuda->input, featuresCuda->layer1, lenetCuda->weight0_1, lenetCuda->bias0_1,
 					   INPUT, LAYER1, LENGTH_FEATURE0, LENGTH_FEATURE0);
-	SubsampForward(featuresCuda->layer1, featuresCuda->layer2, LAYER1, LENGTH_FEATURE1, LAYER2, LENGTH_FEATURE2);
+	SubsampForward(featuresCuda->layer1, featuresCuda->layer2, LENGTH_FEATURE1, LAYER2, LENGTH_FEATURE2);
 	ConvolutionForward(featuresCuda->layer2, featuresCuda->layer3, lenetCuda->weight2_3, lenetCuda->bias2_3,
 					LAYER2, LAYER3, LENGTH_FEATURE2, LENGTH_FEATURE2);
-	SubsampForward(featuresCuda->layer3, featuresCuda->layer4, LAYER3, LENGTH_FEATURE3, LAYER4, LENGTH_FEATURE4);
+	SubsampForward(featuresCuda->layer3, featuresCuda->layer4, LENGTH_FEATURE3, LAYER4, LENGTH_FEATURE4);
 	ConvolutionForward(featuresCuda->layer4, featuresCuda->layer5, lenetCuda->weight4_5, lenetCuda->bias4_5,
 						LAYER4, LAYER5, LENGTH_FEATURE4, LENGTH_FEATURE4);
 	DotProductForward(featuresCuda->layer5, featuresCuda->output, lenetCuda->weight5_6, LAYER5, OUTPUT, lenetCuda->bias5_6);
@@ -658,8 +664,6 @@ void TrainBatch(image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCu
 
 	for (i = 0; i < batchSize; ++i)
 	{ // For each training image
-		cudaMemset(errorsCuda->layer3, 0, LAYER3 * LENGTH_FEATURE3 * LENGTH_FEATURE3 * sizeof(double));
-
 		load_input(featuresCuda, inputs[i]);
 		forward(lenetCuda, featuresCuda); // Forward propagation
 		load_target(featuresCuda, errorsCuda, labels[i]);
