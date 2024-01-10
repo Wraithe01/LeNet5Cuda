@@ -570,33 +570,41 @@ static inline void load_input(FeatureCuda *features, image input)
 	CUDAMEMCPY_CHECK(layer0, features->input, LENGTH_FEATURE0 * LENGTH_FEATURE0 * sizeof(double), cudaMemcpyHostToDevice);
 }
 
-static inline void softmax(double input[OUTPUT], double loss[OUTPUT], int label, int count)
+__global__ void SoftmaxKernel(double* in, double* out, const int label)
 {
-	double inner = 0;
-	for (int i = 0; i < count; ++i)
+	__shared__ double input[OUTPUT];
+	__shared__ double loss[OUTPUT];
+	//10 threads will read the input
+	input[threadIdx.x] = in[threadIdx.x];
+
+	//one thread performs the work, tricky to parallelize
+	if (threadIdx.x == 0)
 	{
-		double res = 0;
-		for (int j = 0; j < count; ++j)
+		double inner = 0;
+		for (int i = 0; i < OUTPUT; ++i)
 		{
-			res += exp(input[j] - input[i]);
+			double res = 0;
+			for (int j = 0; j < OUTPUT; ++j)
+			{
+				res += exp(input[j] - input[i]);
+			}
+			loss[i] = 1. / res;
+			inner -= loss[i] * loss[i];
 		}
-		loss[i] = 1. / res;
-		inner -= loss[i] * loss[i];
+		inner += loss[label];
+		for (int i = 0; i < OUTPUT; ++i)
+		{
+			loss[i] *= (i == label) - loss[i] - inner;
+		}
 	}
-	inner += loss[label];
-	for (int i = 0; i < count; ++i)
-	{
-		loss[i] *= (i == label) - loss[i] - inner;
-	}
+
+	//10 threads will write to output
+	out[threadIdx.x] = loss[threadIdx.x];
 }
 
 static void load_target(FeatureCuda *features, FeatureCuda *errors, int label)
 {
-	double output[OUTPUT];
-	double error[OUTPUT] = { 0 };
-	CUDAMEMCPY_CHECK(features->output, output, OUTPUT * sizeof(double), cudaMemcpyDeviceToHost);
-	softmax(output, error, label, OUTPUT);
-	CUDAMEMCPY_CHECK(error, errors->output, OUTPUT * sizeof(double), cudaMemcpyHostToDevice);
+	SoftmaxKernel <<< 1, OUTPUT >>> (features->output, errors->output, label);
 }
 
 static uint8 get_result(FeatureCuda *features, uint8 count)
@@ -659,10 +667,7 @@ void UpdateModel(LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, const double k)
 
 void TrainBatch(image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
-	double buffer[GETCOUNT(LeNet5)] = { 0 };
-	int i = 0;
-
-	for (i = 0; i < batchSize; ++i)
+	for (int i = 0; i < batchSize; ++i)
 	{ // For each training image
 		load_input(featuresCuda, inputs[i]);
 		forward(lenetCuda, featuresCuda); // Forward propagation
