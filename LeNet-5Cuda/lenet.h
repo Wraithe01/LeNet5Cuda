@@ -102,7 +102,7 @@ typedef struct FeatureCuda
 	double* output;
 }FeatureCuda;
 
-void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda);
+void TrainBatch(image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda);
 
 uint8 Predict(image input, uint8 count, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda);
 
@@ -117,4 +117,5 @@ int LeNetCudaFree(LeNet5Cuda* lenet5);
 int FeatureCudaAlloc(FeatureCuda* feature);
 int FeatureCudaFree(FeatureCuda* feature);
 int LenetCudaUpload(LeNet5* lenet, LeNet5Cuda* lenetCuda);
-
+int LenetCudaDownload(LeNet5* lenet, LeNet5Cuda* lenetCuda);
+int LenetCudaZero(LeNet5Cuda* lenetCuda);

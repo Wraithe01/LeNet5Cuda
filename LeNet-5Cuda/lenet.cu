@@ -136,6 +136,33 @@ int LenetCudaUpload(LeNet5* lenet, LeNet5Cuda* lenetCuda)
 	return 0;
 }
 
+int LenetCudaDownload(LeNet5* lenet, LeNet5Cuda* lenetCuda)
+{
+	CUDAMEMCPY_CHECK(lenetCuda->weight0_1, lenet->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->weight2_3, lenet->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->weight4_5, lenet->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->weight5_6, lenet->weight5_6, sizeof(lenet->weight5_6), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->bias0_1, lenet->bias0_1, sizeof(lenet->bias0_1), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->bias2_3, lenet->bias2_3, sizeof(lenet->bias2_3), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->bias4_5, lenet->bias4_5, sizeof(lenet->bias4_5), cudaMemcpyDeviceToHost);
+	CUDAMEMCPY_CHECK(lenetCuda->bias5_6, lenet->bias5_6, sizeof(lenet->bias5_6), cudaMemcpyDeviceToHost);
+	return 0;
+}
+
+int LenetCudaZero(LeNet5Cuda* lenetCuda)
+{
+	cudaMemset(lenetCuda->weight0_1, 0, INPUT * LAYER1 * LENGTH_KERNEL * LENGTH_KERNEL * sizeof(double));
+	cudaMemset(lenetCuda->weight2_3, 0, LAYER2 * LAYER3 * LENGTH_KERNEL * LENGTH_KERNEL * sizeof(double));
+	cudaMemset(lenetCuda->weight4_5, 0, LAYER4 * LAYER5 * LENGTH_KERNEL * LENGTH_KERNEL * sizeof(double));
+	cudaMemset(lenetCuda->weight5_6, 0, LAYER5 * LENGTH_FEATURE5 * LENGTH_FEATURE5 * OUTPUT * sizeof(double));
+	
+	cudaMemset(lenetCuda->bias0_1, 0, LAYER1 * sizeof(double));
+	cudaMemset(lenetCuda->bias2_3, 0, LAYER3 * sizeof(double));
+	cudaMemset(lenetCuda->bias4_5, 0, LAYER5 * sizeof(double));
+	cudaMemset(lenetCuda->bias5_6, 0, OUTPUT * sizeof(double));
+	return 0;
+}
+
 
 #define GETLENGTH(array) (sizeof(array)/sizeof(*(array)))
 
@@ -284,7 +311,7 @@ __global__ void BiasUpdate(double* bias, const double const* error, const int fe
 		{
 			acc += error[threadIdx.x * size + i];
 		}
-		bias[threadIdx.x] = acc;
+		bias[threadIdx.x] += acc;
 	}
 }
 
@@ -317,7 +344,7 @@ __global__ void WeightConvoluteKernel(const double const* input, double* weight,
 		weight[blockIdx.x * gridDim.y * LENGTH_KERNEL * LENGTH_KERNEL +
 			   blockIdx.y * LENGTH_KERNEL * LENGTH_KERNEL +
 		       threadIdx.y * LENGTH_KERNEL +
-			   threadIdx.x] = acc;
+			   threadIdx.x] += acc;
 	}
 }
 
@@ -381,48 +408,6 @@ void SubsampForward(double* input, double* output, size_t insize, size_t inlayer
 			(uint32_t)ceil((double)outsize / threads.z)
 		};
 		CUDA_SubsampForward << <blocks, threads >> > (input, output, len, inlayersize, outlayersise);
-	}
-}
-
-__global__ void CUDA_DotBinerror(const double const* input, double* inerror, const double const* outerror, const double const* weight, double* bd, const size_t w1size, const size_t w2size)
-{
-	// 120x threads
-	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
-	if (x < w1size)
-	{
-		double acc = 0.0;
-		for (uint32_t y = 0; y < w2size; ++y)
-		{
-			acc += outerror[y] * weight[y + x * w2size];
-		}
-		inerror[x] = acc * (input[x] > 0);
-	}
-	if (x < w2size)
-		bd[x] = outerror[x];
-}
-__global__ void CUDA_DotBias(const double const* input, const double const* outerror, double* wd, const size_t w1size, const size_t w2size)
-{
-	// 8 blocks, 16 x 16 threads
-	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
-	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
-	if (x < w1size && y < w2size)
-		wd[y + x * w2size] = input[x] * outerror[y];
-}
-void DotProductBackward(double* input, double* inerror, double* outerror, double* weight, double* wd, double* bd, const size_t w1size, const size_t w2size)
-{
-	{
-		uint32_t threads = w1size;
-		uint32_t blocks = 1;
-		CUDA_DotBinerror << <blocks, threads >> > (input, inerror, outerror, weight, bd, w1size, w2size);
-	}
-	{
-		// 120 x 10
-		dim3 threads = { 16, 16, 1 };
-		dim3 blocks = {
-			(uint32_t)ceil(((double)w1size / threads.x)),
-			(uint32_t)ceil(((double)w2size / threads.y)),
-			1 };
-		CUDA_DotBias << <blocks, threads >> > (input, outerror, wd, w1size, w2size);
 	}
 }
 
@@ -490,14 +475,46 @@ void DotProductForward(double* input, double* output, double* weight, size_t w1s
 	}
 }
 
-double relu(double x)
+__global__ void CUDA_DotBinerror(const double const* input, double* inerror, const double const* outerror, const double const* weight, double* bd, const size_t w1size, const size_t w2size)
 {
-	return x*(x > 0);
+	// 120x threads
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	if (x < w1size)
+	{
+		double acc = 0.0;
+		for (uint32_t y = 0; y < w2size; ++y)
+		{
+			acc += outerror[y] * weight[y + x * w2size];
+		}
+		inerror[x] = acc * (input[x] > 0);
+	}
+	if (x < w2size)
+		bd[x] += outerror[x];
 }
-
-double relugrad(double y)
+__global__ void CUDA_DotBias(const double const* input, const double const* outerror, double* wd, const size_t w1size, const size_t w2size)
 {
-	return y > 0;
+	// 8 blocks, 16 x 16 threads
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
+	if (x < w1size && y < w2size)
+		wd[y + x * w2size] += input[x] * outerror[y];
+}
+void DotProductBackward(double* input, double* inerror, double* outerror, double* weight, double* wd, double* bd, const size_t w1size, const size_t w2size)
+{
+	{
+		uint32_t threads = w1size;
+		uint32_t blocks = 1;
+		CUDA_DotBinerror << <blocks, threads >> > (input, inerror, outerror, weight, bd, w1size, w2size);
+	}
+	{
+		// 120 x 10
+		dim3 threads = { 16, 16, 1 };
+		dim3 blocks = {
+			(uint32_t)ceil(((double)w1size / threads.x)),
+			(uint32_t)ceil(((double)w2size / threads.y)),
+			1 };
+		CUDA_DotBias << <blocks, threads >> > (input, outerror, wd, w1size, w2size);
+	}
 }
 
 static void forward(LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
@@ -609,47 +626,47 @@ static double f64rand()
 	return *(double *)&lvalue - 3;
 }
 
-void TrainBatch(LeNet5 *lenet, image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
+__global__ void UpdateModelKernel(double* weight, double* delta, const double k, const int size)
+{
+	const int start = blockIdx.x * blockDim.x + threadIdx.x;
+	const int stride = gridDim.x * blockDim.x;
+
+	for (int i = start; i < size; i += stride)
+	{
+		weight[i] += delta[i] * k;
+		delta[i] = 0;
+	}
+}
+
+void UpdateModel(LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, const double k)
+{
+	UpdateModelKernel << < 1, INPUT* LAYER1* LENGTH_KERNEL* LENGTH_KERNEL >> > (lenetCuda->weight0_1, deltasCuda->weight0_1, k, INPUT * LAYER1 * LENGTH_KERNEL * LENGTH_KERNEL);
+	UpdateModelKernel << < 5, 256 >> > (lenetCuda->weight2_3, deltasCuda->weight2_3, k, LAYER2 * LAYER3 * LENGTH_KERNEL * LENGTH_KERNEL);
+	UpdateModelKernel << < 10, 1024 >> > (lenetCuda->weight4_5, deltasCuda->weight4_5, k, LAYER4 * LAYER5 * LENGTH_KERNEL * LENGTH_KERNEL);
+	UpdateModelKernel << < 5, 256 >> > (lenetCuda->weight5_6, deltasCuda->weight5_6, k, LAYER5 * LENGTH_FEATURE5 * LENGTH_FEATURE5 * OUTPUT);
+
+	UpdateModelKernel << < 1, LAYER1 >> > (lenetCuda->bias0_1, deltasCuda->bias0_1, k, LAYER1);
+	UpdateModelKernel << < 1, LAYER3 >> > (lenetCuda->bias2_3, deltasCuda->bias2_3, k, LAYER3);
+	UpdateModelKernel << < 1, LAYER5 >> > (lenetCuda->bias4_5, deltasCuda->bias4_5, k, LAYER5);
+	UpdateModelKernel << < 1, OUTPUT >> > (lenetCuda->bias5_6, deltasCuda->bias5_6, k, OUTPUT);
+}
+
+void TrainBatch(image *inputs, uint8 *labels, int batchSize, LeNet5Cuda* lenetCuda, LeNet5Cuda* deltasCuda, FeatureCuda* featuresCuda, FeatureCuda* errorsCuda)
 {
 	double buffer[GETCOUNT(LeNet5)] = { 0 };
 	int i = 0;
 
-	CUDAMEMCPY_CHECK(lenet->weight0_1, lenetCuda->weight0_1, sizeof(lenet->weight0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->weight2_3, lenetCuda->weight2_3, sizeof(lenet->weight2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->weight4_5, lenetCuda->weight4_5, sizeof(lenet->weight4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->weight5_6, lenetCuda->weight5_6, sizeof(lenet->weight5_6), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias0_1, lenetCuda->bias0_1, sizeof(lenet->bias0_1), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias2_3, lenetCuda->bias2_3, sizeof(lenet->bias2_3), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias4_5, lenetCuda->bias4_5, sizeof(lenet->bias4_5), cudaMemcpyHostToDevice);
-	CUDAMEMCPY_CHECK(lenet->bias5_6, lenetCuda->bias5_6, sizeof(lenet->bias5_6), cudaMemcpyHostToDevice);
-
 	for (i = 0; i < batchSize; ++i)
 	{ // For each training image
-		LeNet5	deltas = { 0 };
-
 		cudaMemset(errorsCuda->layer3, 0, LAYER3 * LENGTH_FEATURE3 * LENGTH_FEATURE3 * sizeof(double));
 
 		load_input(featuresCuda, inputs[i]);
 		forward(lenetCuda, featuresCuda); // Forward propagation
 		load_target(featuresCuda, errorsCuda, labels[i]);
 		backward(lenetCuda, deltasCuda, featuresCuda, errorsCuda); // Backpropagation
-
-		CUDAMEMCPY_CHECK(deltasCuda->weight0_1, deltas.weight0_1, sizeof(deltas.weight0_1), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->bias0_1, deltas.bias0_1, sizeof(deltas.bias0_1), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->weight2_3, deltas.weight2_3, sizeof(deltas.weight2_3), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->bias2_3, deltas.bias2_3, sizeof(deltas.bias2_3), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->weight4_5, deltas.weight4_5, sizeof(deltas.weight4_5), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->bias4_5, deltas.bias4_5, sizeof(deltas.bias4_5), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->weight5_6, deltas.weight5_6, sizeof(deltas.weight5_6), cudaMemcpyDeviceToHost);
-		CUDAMEMCPY_CHECK(deltasCuda->bias5_6, deltas.bias5_6, sizeof(deltas.bias5_6), cudaMemcpyDeviceToHost);
-		// if time, cudafy!
-		FOREACH(j, GETCOUNT(LeNet5))
-				buffer[j] += ((double *)&deltas)[j];
 	}
-	LeNet5	deltas = { 0 };
-	double k = ALPHA / batchSize;
-	FOREACH(i, GETCOUNT(LeNet5))
-		((double *)lenet)[i] += k * buffer[i];
+	const double k = ALPHA / batchSize;
+	UpdateModel(lenetCuda, deltasCuda, k);
 }
 
 uint8 Predict(image input,uint8 count, LeNet5Cuda* lenetCuda, FeatureCuda* featuresCuda)
